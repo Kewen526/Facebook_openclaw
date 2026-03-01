@@ -17,7 +17,7 @@ import threading
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import Flask, jsonify, request, session
+from flask import Flask, jsonify, request, session, render_template
 
 from config import FLASK_PORT, FLASK_SECRET
 from models import (
@@ -563,6 +563,11 @@ def stats():
 # ============================================================
 # 启动入口
 # ============================================================
+
+@app.get('/')
+def index():
+    return render_template('index.html')
+
 
 if __name__ == '__main__':
     init_db()
