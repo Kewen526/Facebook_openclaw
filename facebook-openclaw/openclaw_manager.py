@@ -39,8 +39,11 @@ class OpenClawManager:
     # 客户端访问
     # ----------------------------------------------------------
 
-    def get_client(self) -> OpenClawClient:
-        """返回全局 OpenClawClient 单例"""
+    def get_client(self, account_id: int = None) -> OpenClawClient:
+        """
+        返回全局 OpenClawClient 单例。
+        account_id 参数保留仅为兼容旧接口（单实例模式下忽略）。
+        """
         return get_client()
 
     @property
