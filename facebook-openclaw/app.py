@@ -17,7 +17,8 @@ import threading
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import Flask, jsonify, request, session, render_template
+import os
+from flask import Flask, jsonify, request, session, send_file
 
 from config import FLASK_PORT, FLASK_SECRET
 from models import (
@@ -566,7 +567,7 @@ def stats():
 
 @app.get('/')
 def index():
-    return render_template('index.html')
+    return send_file(os.path.join(os.path.dirname(__file__), 'templates', 'index.html'))
 
 
 if __name__ == '__main__':
