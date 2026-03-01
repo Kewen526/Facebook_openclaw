@@ -95,13 +95,44 @@ class OpenClawManager:
     # ----------------------------------------------------------
 
     def get_status(self) -> dict:
-        """返回 Gateway 当前状态（供 Flask /api/status 使用）"""
+        """返回 Gateway 当前状态"""
         client = get_client()
         return {
             'gateway_url':    client.base_url,
             'gateway_model':  client.model,
             'gateway_online': self._gateway_online,
         }
+
+    def get_all_status(self) -> list:
+        """
+        返回实例状态列表（单实例模式下只有一项）。
+        供 Flask /api/openclaw/status 使用，前端按列表渲染。
+        """
+        client = get_client()
+        return [{
+            'account_id':   0,
+            'account_name': 'OpenClaw Gateway',
+            'status':       'connected' if self._gateway_online else 'error',
+            'gateway_url':  client.base_url,
+            'model':        client.model,
+        }]
+
+    def start_instance(self, account_id: int) -> bool:
+        """
+        单实例模式：Gateway 由系统管理员维护，此处仅检查是否在线。
+        返回 True 表示 Gateway 当前可达。
+        """
+        online = get_client().is_alive()
+        with self._lock:
+            self._gateway_online = online
+        return online
+
+    def stop_instance(self, account_id: int) -> bool:
+        """
+        单实例模式：不支持从应用层停止 Gateway 进程，返回 True 表示指令已收到。
+        """
+        logger.info(f'stop_instance called (account_id={account_id})，单实例模式下 Gateway 需手动管理')
+        return True
 
 
 # 全局单例
