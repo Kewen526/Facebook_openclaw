@@ -21,24 +21,18 @@ FLASK_PORT   = int(os.environ.get('FLASK_PORT', '8080'))
 FLASK_SECRET = os.environ.get('FLASK_SECRET', 'change-me-in-production')
 
 # ============================================================
-# OpenClaw 多实例配置
+# OpenClaw Gateway 配置（单实例）
+# 服务器上已运行 openclaw-gateway，监听 18789 端口
 # ============================================================
-# 第一个账号占用 BASE_PORT，第二个占 BASE_PORT+1，以此类推
-OPENCLAW_BASE_PORT   = int(os.environ.get('OPENCLAW_BASE_PORT', '18789'))
-# openclaw 可执行文件路径（安装后一般在 PATH 里）
-OPENCLAW_BIN         = os.environ.get('OPENCLAW_BIN', 'openclaw')
-# 各实例数据目录的根目录，每个账号会创建子目录 account_<id>
-OPENCLAW_DATA_ROOT   = os.environ.get('OPENCLAW_DATA_ROOT', os.path.expanduser('~/.openclaw'))
-# 实例启动最长等待时间（秒）
-OPENCLAW_START_TIMEOUT = int(os.environ.get('OPENCLAW_START_TIMEOUT', '30'))
-# 心跳检测间隔（秒）：Python 定期 ping 各实例
+# Gateway API 地址（本机访问）
+OPENCLAW_API_URL     = os.environ.get('OPENCLAW_API_URL', 'http://127.0.0.1:18789')
+# Gateway 鉴权 token（来自 openclaw.json gateway.auth.token）
+OPENCLAW_AUTH_TOKEN  = os.environ.get('OPENCLAW_AUTH_TOKEN', '15386f2dfc54fc186314846c80f35922')
+# 使用的 AI 模型（Qwen3，来自 openclaw.json agents.defaults.model.primary）
+OPENCLAW_API_MODEL   = os.environ.get('OPENCLAW_API_MODEL', 'qwen3-max-2026-01-23')
+# 心跳检测间隔（秒）
 OPENCLAW_HEARTBEAT_INTERVAL = int(os.environ.get('OPENCLAW_HEARTBEAT_INTERVAL', '60'))
 
-# ============================================================
-# ZhipuAI（帖子分析 + 话术生成）
-# ============================================================
-ZHIPU_MODEL          = os.environ.get('ZHIPU_MODEL', 'glm-4-flash')
-ZHIPU_KEY_SERVER_URL = os.environ.get('ZHIPU_KEY_SERVER_URL', 'http://47.95.157.46:8520/get_keys')
 # AI 分析：3票表决，至少几票为"是"才判定为目标客户
 AI_VOTE_THRESHOLD    = int(os.environ.get('AI_VOTE_THRESHOLD', '2'))
 AI_VOTE_TOTAL        = int(os.environ.get('AI_VOTE_TOTAL', '3'))

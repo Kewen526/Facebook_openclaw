@@ -1,29 +1,30 @@
 """
 OpenClaw Gateway HTTP 客户端
 
-封装与单个 OpenClaw 实例（运行在特定端口）的所有通信。
-每个 Facebook 账号对应一个实例，通过不同端口区分。
+封装与服务器上运行的单一 openclaw-gateway 实例的所有通信。
+Gateway 暴露 OpenAI 兼容的 API，使用 Qwen3 模型。
 
-OpenClaw Gateway HTTP API（基于 Apify/OpenClawBot 文档）：
-  POST /agent          发送自然语言指令，让 AI 控制浏览器
-  GET  /health         心跳检测
-  GET  /config         读取配置
-  POST /config         设置配置
+实际部署信息（来自服务器 openclaw.json）：
+  端口: 18789（对外）/ 18792（仅本地，内部控制）
+  认证: Bearer token（openclaw.json → gateway.auth.token）
+  模型: qwen3-max-2026-01-23（alibaba-cloud/qwen3-max-2026-01-23）
+  API:  POST /v1/chat/completions（OpenAI 兼容格式）
 """
 
 import json
 import logging
+import re
 import time
 from typing import Optional
 
 import requests
 
+from config import OPENCLAW_API_URL, OPENCLAW_AUTH_TOKEN, OPENCLAW_API_MODEL
+
 logger = logging.getLogger(__name__)
 
-# 单次指令最长等待时间（秒）
-DEFAULT_TIMEOUT = 120
-# 页面操作类指令的超时（浏览器操作慢）
-BROWSER_TIMEOUT = 180
+DEFAULT_TIMEOUT = 60   # 普通 chat 请求超时（秒）
+MAX_TOKENS      = 512  # 默认最大输出 token 数
 
 
 class OpenClawError(Exception):
@@ -32,286 +33,169 @@ class OpenClawError(Exception):
 
 class OpenClawClient:
     """
-    与单个 OpenClaw Gateway 实例通信的客户端。
+    与 openclaw-gateway 通信的客户端（单实例）。
 
-    用法示例：
-        client = OpenClawClient(port=18789)
+    用法：
+        client = OpenClawClient()
         if client.is_alive():
-            result = client.navigate('https://www.facebook.com/')
+            reply = client.chat([{"role": "user", "content": "你好"}])
     """
 
-    def __init__(self, port: int, token: Optional[str] = None):
-        self.base_url = f'http://127.0.0.1:{port}'
-        self.port     = port
-        self.token    = token  # 如果 Gateway 配置了鉴权 token
+    def __init__(
+        self,
+        base_url: str = OPENCLAW_API_URL,
+        token: str = OPENCLAW_AUTH_TOKEN,
+        model: str = OPENCLAW_API_MODEL,
+    ):
+        self.base_url = base_url.rstrip('/')
+        self.model    = model
         self.session  = requests.Session()
-        self.session.headers.update({'Content-Type': 'application/json'})
-        if token:
-            self.session.headers.update({'Authorization': f'Bearer {token}'})
+        self.session.headers.update({
+            'Content-Type':  'application/json',
+            'Authorization': f'Bearer {token}',
+        })
 
     # ----------------------------------------------------------
-    # 基础通信
+    # 健康检测
     # ----------------------------------------------------------
 
     def is_alive(self, timeout: int = 5) -> bool:
-        """检查实例是否在线"""
+        """检查 Gateway 是否在线（调用 /v1/models 端点）"""
         try:
-            resp = self.session.get(f'{self.base_url}/health', timeout=timeout)
-            return resp.status_code == 200
+            resp = self.session.get(f'{self.base_url}/v1/models', timeout=timeout)
+            return resp.status_code in (200, 401)  # 401 说明服务在线但 token 不对
         except Exception:
             return False
 
-    def _post_agent(self, instruction: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
+    # ----------------------------------------------------------
+    # 核心：OpenAI 兼容 Chat Completions
+    # ----------------------------------------------------------
+
+    def chat(
+        self,
+        messages: list[dict],
+        temperature: float = 0.8,
+        max_tokens: int = MAX_TOKENS,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> Optional[str]:
         """
-        向 OpenClaw AI Agent 发送自然语言指令。
-        返回 Agent 的响应字典。
+        调用 /v1/chat/completions，返回模型回复文本。
+        失败返回 None。
+
+        messages 格式（OpenAI 标准）：
+            [{"role": "user", "content": "..."}]
+            [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]
         """
         payload = {
-            'message': instruction,
-            'channel': 'webchat',
+            'model':       self.model,
+            'messages':    messages,
+            'temperature': temperature,
+            'max_tokens':  max_tokens,
+            'stream':      False,
         }
         try:
             resp = self.session.post(
-                f'{self.base_url}/agent',
+                f'{self.base_url}/v1/chat/completions',
                 json=payload,
                 timeout=timeout,
             )
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            return data['choices'][0]['message']['content'].strip()
         except requests.exceptions.Timeout:
-            raise OpenClawError(f'[port={self.port}] 指令超时（{timeout}s）: {instruction[:80]}')
-        except requests.exceptions.RequestException as e:
-            raise OpenClawError(f'[port={self.port}] 请求失败: {e}')
+            logger.error(f'OpenClaw 请求超时（{timeout}s）')
+            return None
+        except requests.exceptions.HTTPError as e:
+            logger.error(f'OpenClaw HTTP 错误 {e.response.status_code}: {e.response.text[:200]}')
+            return None
+        except Exception as e:
+            logger.error(f'OpenClaw 请求失败: {e}')
+            return None
 
     # ----------------------------------------------------------
-    # Cookie 管理（Facebook 登录）
+    # 工具函数：提取 JSON 数组
     # ----------------------------------------------------------
 
-    def inject_cookies(self, cookies: list[dict]) -> bool:
-        """
-        将 Cookie 列表注入浏览器（facebook.com 域名下）。
-        cookies 格式：[{"name": "...", "value": "...", "domain": ".facebook.com", ...}, ...]
-        """
-        cookies_json = json.dumps(cookies)
-        instruction = (
-            f'Please inject the following cookies into the browser for facebook.com domain, '
-            f'then navigate to https://www.facebook.com/ to verify login. '
-            f'Cookies JSON: {cookies_json}'
-        )
+    @staticmethod
+    def extract_json_array(text: str) -> list:
+        """从模型回复中提取第一个 JSON 数组"""
+        if not text:
+            return []
+        start = text.find('[')
+        end   = text.rfind(']')
+        if start == -1 or end == -1 or end <= start:
+            return []
         try:
-            result = self._post_agent(instruction, timeout=BROWSER_TIMEOUT)
-            response_text = result.get('response', '').lower()
-            # 判断注入是否成功：页面出现 Facebook 主界面关键词
-            success_signals = ['facebook', 'home', 'feed', 'news', 'logged in', 'welcome']
-            return any(s in response_text for s in success_signals)
-        except OpenClawError as e:
-            logger.error(f'Cookie 注入失败: {e}')
-            return False
-
-    # ----------------------------------------------------------
-    # 浏览器导航
-    # ----------------------------------------------------------
-
-    def navigate(self, url: str) -> dict:
-        """导航到指定 URL 并返回页面状态"""
-        instruction = f'Navigate to {url} and wait for the page to fully load.'
-        return self._post_agent(instruction, timeout=BROWSER_TIMEOUT)
-
-    def scroll_and_collect_posts(self, scroll_times: int = 5) -> list[dict]:
-        """
-        在当前页面滚动并收集帖子信息。
-        返回帖子列表，每个帖子包含：post_id, post_url, author_name, author_id,
-        author_profile_url, content, post_time
-        """
-        instruction = (
-            f'Scroll down the Facebook feed {scroll_times} times slowly, waiting 2 seconds between each scroll. '
-            f'After scrolling, collect ALL visible Facebook posts on the page. '
-            f'For each post extract: '
-            f'1) post_id (the numeric ID from the post URL or data attributes), '
-            f'2) post_url (full URL to the post), '
-            f'3) author_name (display name of the person who posted), '
-            f'4) author_id (Facebook user ID from the profile URL), '
-            f'5) author_profile_url (full URL to the author profile), '
-            f'6) content (full text content of the post), '
-            f'7) post_time (when the post was made, as shown on page). '
-            f'Return the results as a JSON array of objects with these exact keys. '
-            f'Only return the JSON array, no other text.'
-        )
-        try:
-            result = self._post_agent(instruction, timeout=BROWSER_TIMEOUT)
-            response_text = result.get('response', '')
-            # 尝试从响应中提取 JSON 数组
-            posts = _extract_json_array(response_text)
-            return posts
-        except OpenClawError as e:
-            logger.error(f'抓取帖子失败: {e}')
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            logger.warning(f'JSON 解析失败，片段: {text[start:start + 200]}')
             return []
 
     # ----------------------------------------------------------
-    # 评论操作
+    # 从文本中提取 WhatsApp 号码（正则优先，AI 兜底）
     # ----------------------------------------------------------
 
-    def post_comment(self, post_url: str, comment_text: str) -> bool:
-        """
-        在指定帖子下发表评论。
-        返回 True 表示成功，False 表示失败。
-        """
-        instruction = (
-            f'Go to this Facebook post: {post_url} '
-            f'Find the comment box, click on it, type the following comment exactly as written, '
-            f'then submit it by pressing Enter or clicking the Post button. '
-            f'Comment text: {comment_text} '
-            f'After submitting, confirm whether the comment was posted successfully. '
-            f'Reply with "SUCCESS" if the comment was posted, or "FAILED" with the reason if not.'
+    def extract_wa_number(self, text: str) -> Optional[str]:
+        """从文本中提取 WhatsApp / 电话号码"""
+        if not text:
+            return None
+
+        patterns = [
+            r'wa\.me/(\d{7,15})',
+            r'\+\d{7,15}',
+            r'\b\d{3}[-.\s]?\d{3,4}[-.\s]?\d{4}\b',
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, text)
+            if m:
+                number = m.group(1) if m.lastindex else m.group(0)
+                number = re.sub(r'[\s\-.]', '', number)
+                if 'wa.me' in text and not number.startswith('+'):
+                    number = '+' + number
+                return number
+
+        # 正则未找到，AI 兜底
+        result = self.chat(
+            [{'role': 'user', 'content': (
+                f'Extract any WhatsApp or phone number from this text. '
+                f'Return ONLY the number in international format (e.g. +8613800138000) or NONE.\n\n'
+                f'Text: {text[:500]}'
+            )}],
+            temperature=0.1,
+            max_tokens=50,
         )
-        try:
-            result = self._post_agent(instruction, timeout=BROWSER_TIMEOUT)
-            response_text = result.get('response', '').upper()
-            return 'SUCCESS' in response_text
-        except OpenClawError as e:
-            logger.error(f'发表评论失败 post_url={post_url}: {e}')
-            return False
-
-    # ----------------------------------------------------------
-    # 私信操作
-    # ----------------------------------------------------------
-
-    def send_dm(self, author_profile_url: str, message_text: str) -> bool:
-        """
-        向指定用户发送私信。
-        先访问对方主页，点击 Message 按钮，再发送消息。
-        返回 True 表示成功。
-        """
-        instruction = (
-            f'Go to this Facebook profile: {author_profile_url} '
-            f'Find and click the "Message" button to open the direct message dialog. '
-            f'Type the following message exactly as written, then send it. '
-            f'Message: {message_text} '
-            f'After sending, confirm whether the message was sent successfully. '
-            f'Reply with "SUCCESS" if sent, or "FAILED" with the reason if not.'
-        )
-        try:
-            result = self._post_agent(instruction, timeout=BROWSER_TIMEOUT)
-            response_text = result.get('response', '').upper()
-            return 'SUCCESS' in response_text
-        except OpenClawError as e:
-            logger.error(f'发送私信失败 profile={author_profile_url}: {e}')
-            return False
-
-    # ----------------------------------------------------------
-    # 互动操作（点赞、有兴趣等）
-    # ----------------------------------------------------------
-
-    def click_interested(self, post_url: str) -> bool:
-        """点击帖子的"有兴趣"按钮"""
-        instruction = (
-            f'Go to this Facebook post: {post_url} '
-            f'Find and click the "Interested" button or reaction. '
-            f'Reply with "SUCCESS" if clicked, "FAILED" otherwise.'
-        )
-        try:
-            result = self._post_agent(instruction, timeout=BROWSER_TIMEOUT)
-            return 'SUCCESS' in result.get('response', '').upper()
-        except OpenClawError:
-            return False
-
-    def click_not_interested(self, post_url: str) -> bool:
-        """点击帖子的"没有兴趣"按钮"""
-        instruction = (
-            f'Go to this Facebook post: {post_url} '
-            f'Find and click the "Not Interested" or "Hide post" option. '
-            f'Reply with "SUCCESS" if clicked, "FAILED" otherwise.'
-        )
-        try:
-            result = self._post_agent(instruction, timeout=BROWSER_TIMEOUT)
-            return 'SUCCESS' in result.get('response', '').upper()
-        except OpenClawError:
-            return False
-
-    # ----------------------------------------------------------
-    # 回复检测（从通知/评论中提取 WhatsApp 号码）
-    # ----------------------------------------------------------
-
-    def check_post_replies(self, post_url: str) -> list[dict]:
-        """
-        访问帖子，提取评论中的 WhatsApp 号码或相关回复。
-        返回列表：[{"author_name": ..., "author_id": ..., "comment": ..., "wa_number": ...}]
-        """
-        instruction = (
-            f'Go to this Facebook post: {post_url} '
-            f'Load all comments (click "View more comments" if present). '
-            f'Look for any comments that contain WhatsApp numbers, phone numbers, '
-            f'or mentions of WhatsApp (e.g., "wa.me/", "+1234", "WhatsApp: 123"). '
-            f'For each relevant comment, extract: '
-            f'author_name, author_id (from profile URL if visible), '
-            f'the full comment text, and the WhatsApp/phone number found. '
-            f'Return results as a JSON array with keys: '
-            f'author_name, author_id, comment, wa_number. '
-            f'If no WhatsApp numbers found, return an empty array [].'
-        )
-        try:
-            result = self._post_agent(instruction, timeout=BROWSER_TIMEOUT)
-            return _extract_json_array(result.get('response', ''))
-        except OpenClawError as e:
-            logger.error(f'检查帖子回复失败: {e}')
-            return []
-
-    def check_dm_replies(self) -> list[dict]:
-        """
-        访问 Facebook Messenger 收件箱，提取含有 WhatsApp 号码的回复。
-        返回列表：[{"author_name": ..., "author_id": ..., "message": ..., "wa_number": ...}]
-        """
-        instruction = (
-            'Go to https://www.facebook.com/messages/ and check recent message conversations. '
-            'Look for any messages that contain WhatsApp numbers or phone numbers. '
-            'For each relevant conversation extract: '
-            'author_name, author_id (from URL if visible), '
-            'the message text, and the WhatsApp/phone number found. '
-            'Return results as a JSON array with keys: '
-            'author_name, author_id, message, wa_number. '
-            'If none found, return [].'
-        )
-        try:
-            result = self._post_agent(instruction, timeout=BROWSER_TIMEOUT)
-            return _extract_json_array(result.get('response', ''))
-        except OpenClawError as e:
-            logger.error(f'检查私信回复失败: {e}')
-            return []
+        if result and result.strip().upper() != 'NONE':
+            return result.strip()
+        return None
 
 
 # ----------------------------------------------------------
-# 工具函数
+# 全局单例（整个应用共用一个连接）
 # ----------------------------------------------------------
 
-def _extract_json_array(text: str) -> list:
-    """
-    从 AI 响应文本中提取 JSON 数组。
-    OpenClaw 可能在 JSON 前后加说明文字，这里尝试找到第一个 [ ... ] 块。
-    """
-    if not text:
-        return []
-    # 找到第一个 '[' 和最后一个 ']'
-    start = text.find('[')
-    end   = text.rfind(']')
-    if start == -1 or end == -1 or end <= start:
-        return []
-    try:
-        return json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
-        logger.warning(f'JSON 解析失败，原始文本片段: {text[start:start+200]}')
-        return []
+_client: Optional[OpenClawClient] = None
 
 
-def wait_for_instance(port: int, timeout: int = 30, interval: int = 2) -> bool:
+def get_client() -> OpenClawClient:
+    """获取全局 OpenClawClient 单例"""
+    global _client
+    if _client is None:
+        _client = OpenClawClient()
+    return _client
+
+
+def wait_for_gateway(timeout: int = 30, interval: int = 2) -> bool:
     """
-    等待 OpenClaw 实例启动完成（轮询 /health 端点）。
-    timeout: 最长等待秒数
-    interval: 每次检查间隔秒数
+    等待 openclaw-gateway 启动就绪（轮询 /v1/models）。
+    一般在应用启动时调用一次。
     """
-    client   = OpenClawClient(port=port)
+    client   = OpenClawClient()
     deadline = time.time() + timeout
     while time.time() < deadline:
         if client.is_alive():
+            logger.info('OpenClaw Gateway 已就绪')
             return True
+        logger.debug('等待 OpenClaw Gateway 启动...')
         time.sleep(interval)
+    logger.error(f'OpenClaw Gateway 在 {timeout}s 内未响应')
     return False
