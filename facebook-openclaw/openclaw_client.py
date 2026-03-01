@@ -256,6 +256,16 @@ class OpenClawClient:
         )
         return 'SUCCESS' in result.upper()
 
+    def click_like(self, post_url: str) -> bool:
+        """点击帖子的"赞"按钮"""
+        result = self._run_agent(
+            f'Use browser automation:\n'
+            f'1. Navigate to: {post_url}\n'
+            f'2. Find and click the "Like" button on the post (thumbs up)\n'
+            f'Reply with "SUCCESS" if clicked, "FAILED <reason>" if not.'
+        )
+        return 'SUCCESS' in result.upper()
+
     def check_post_replies(self, post_url: str) -> list[dict]:
         """
         抓取帖子评论，提取含 WhatsApp 号码的评论。
