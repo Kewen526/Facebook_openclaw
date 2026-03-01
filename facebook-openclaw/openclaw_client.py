@@ -117,7 +117,7 @@ class OpenClawClient:
         """
         payload = {
             'model':  self.model,
-            'input':  [{'role': 'user', 'content': instruction}],
+            'input':  instruction,
             'stream': False,
         }
         try:
