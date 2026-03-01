@@ -155,6 +155,7 @@ def _monitor_one_page(account: Account, page_url: str) -> dict:
 
             # 极低概率点赞（所有帖子）
             if random.random() < LIKE_PROBABILITY:
+                client.click_like(post_data.get('post_url', ''))
                 _update_post_flags(session, post_id, action_liked=True)
 
     finally:
