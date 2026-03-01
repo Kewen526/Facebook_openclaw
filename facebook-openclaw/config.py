@@ -1,4 +1,5 @@
 import os
+from urllib.parse import quote_plus
 
 # ============================================================
 # 数据库
@@ -10,7 +11,7 @@ DB_PASSWORD = os.environ.get('DB_PASSWORD', '')
 DB_NAME     = os.environ.get('DB_NAME',     'facebook_openclaw')
 
 DATABASE_URL = (
-    f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    f"mysql+pymysql://{DB_USER}:{quote_plus(DB_PASSWORD)}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     "?charset=utf8mb4"
 )
 
