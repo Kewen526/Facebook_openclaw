@@ -17,7 +17,8 @@ BRANCH="main"
 REMOTE_DIR="/opt/facebook-openclaw"
 APP_SUBDIR="facebook-openclaw"          # 仓库内的子目录
 SERVICE_NAME="fb-openclaw"
-PYTHON="python3"
+# 优先使用 python3.11（编译安装路径），其次回退到系统 python3
+PYTHON="$( command -v /usr/local/bin/python3.11 2>/dev/null || command -v python3.11 2>/dev/null || echo python3 )"
 
 # 数据库
 DB_NAME="facebook_openclaw"
@@ -60,13 +61,24 @@ ssh "$SERVER" "
     set -e
     cd '$REMOTE_DIR/$APP_SUBDIR'
 
-    # 检查 python3 版本 ≥ 3.10
+    # 检查 python 版本 ≥ 3.10
     PY_MINOR=\$($PYTHON -c 'import sys; print(sys.version_info.minor)')
-    if [ \"\$PY_MINOR\" -lt 10 ]; then
-        echo '!! 需要 Python 3.10+，当前版本不满足' && exit 1
+    PY_MAJOR=\$($PYTHON -c 'import sys; print(sys.version_info.major)')
+    if [ \"\$PY_MAJOR\" -lt 3 ] || [ \"\$PY_MINOR\" -lt 10 ]; then
+        echo '!! 需要 Python 3.10+，请先在服务器上执行以下命令安装 Python 3.11:'
+        echo '   yum groupinstall -y \"Development Tools\"'
+        echo '   yum install -y openssl-devel bzip2-devel libffi-devel zlib-devel wget'
+        echo '   cd /tmp && wget https://www.python.org/ftp/python/3.11.9/Python-3.11.9.tgz'
+        echo '   tar xzf Python-3.11.9.tgz && cd Python-3.11.9'
+        echo '   ./configure --enable-optimizations --prefix=/usr/local && make -j\$(nproc) altinstall'
+        exit 1
     fi
 
-    # 创建/更新虚拟环境
+    # 创建/更新虚拟环境（若 Python 版本已变，重建 venv）
+    if [ -d venv ]; then
+        VENV_PY=\$(venv/bin/python -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo 0)
+        [ \"\$VENV_PY\" -lt 10 ] && rm -rf venv  # 旧 venv 用了 Python 3.6，删掉重建
+    fi
     [ -d venv ] || $PYTHON -m venv venv
     source venv/bin/activate
     pip install --upgrade pip -q
