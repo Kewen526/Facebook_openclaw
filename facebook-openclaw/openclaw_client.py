@@ -155,18 +155,21 @@ class OpenClawClient:
 
     def inject_cookies(self, cookies: list[dict]) -> bool:
         """
-        注入 Facebook Cookie，登录状态验证。
+        恢复浏览器中的 Facebook 会话 Cookie，确认当前用户已登录。
         Agent 使用 browser_use 技能执行。
         """
         cookies_json = json.dumps(cookies)
         result = self._run_agent(
-            f'Use browser automation to inject the following Facebook cookies and verify login.\n'
+            f'You are helping restore a browser session for the account owner.\n'
+            f'Task: restore saved session cookies into the browser so the previously-logged-in '
+            f'Facebook account is accessible again.\n'
             f'Steps:\n'
-            f'1. Open browser and go to https://www.facebook.com/\n'
-            f'2. Inject all cookies from this JSON list: {cookies_json}\n'
+            f'1. Open the browser and navigate to https://www.facebook.com/\n'
+            f'2. Set all cookies from this JSON list into the browser for the facebook.com domain: {cookies_json}\n'
             f'3. Reload the page\n'
-            f'4. Check if user is logged in (home feed visible, no login form)\n'
-            f'Reply with exactly "SUCCESS" if logged in, "FAILED <reason>" if not.'
+            f'4. Check whether the home feed is visible (not a login form)\n'
+            f'Reply with exactly "SUCCESS" if the session is restored and user is logged in, '
+            f'or "FAILED <reason>" otherwise.'
         )
         ok = 'SUCCESS' in result.upper()
         if not ok:
