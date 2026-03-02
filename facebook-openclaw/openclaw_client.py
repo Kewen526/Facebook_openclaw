@@ -62,10 +62,12 @@ class OpenClawClient:
     # =========================================================
 
     def is_alive(self, timeout: int = 5) -> bool:
-        """检查 Gateway 是否在线"""
+        """检查 Gateway 是否在线（任意 HTTP 响应即视为在线）"""
         try:
             r = self.session.get(f'{self.base_url}/v1/models', timeout=timeout)
-            return r.status_code in (200, 401)
+            return r.status_code < 500
+        except requests.exceptions.ConnectionError:
+            return False
         except Exception:
             return False
 
@@ -168,7 +170,13 @@ class OpenClawClient:
         )
         ok = 'SUCCESS' in result.upper()
         if not ok:
-            logger.warning(f'Cookie 注入失败: {result[:120]}')
+            # 记录完整响应，便于诊断 browser tool 是否正常工作
+            logger.warning(f'Cookie 注入失败，Agent 完整响应:\n{result}')
+            if 'authentication' in result.lower() or 'auth' in result.lower():
+                logger.error(
+                    'OpenClaw browser tool 存在认证问题！'
+                    '请检查 Gateway 浏览器组件配置。'
+                )
         return ok
 
     def navigate(self, url: str) -> dict:
