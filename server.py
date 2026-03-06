@@ -234,11 +234,17 @@ def build_llm(cfg: dict):
         raise ValueError(f"\u672a\u914d\u7f6e {pinfo.get('name',provider)} \u7684 API Key\uff0c\u8bf7\u70b9\u51fb\u53f3\u4e0a\u89d2 \u2699\ufe0f \u586b\u5199")
 
     if provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
+        try:
+            from browser_use import ChatAnthropic
+        except ImportError:
+            from langchain_anthropic import ChatAnthropic
         return ChatAnthropic(model=model_id, api_key=key, temperature=0)
 
     else:
-        from langchain_openai import ChatOpenAI
+        try:
+            from browser_use import ChatOpenAI
+        except ImportError:
+            from langchain_openai import ChatOpenAI
         kwargs = dict(model=model_id, api_key=key, temperature=0)
         if base_url:
             kwargs["base_url"] = base_url
