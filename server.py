@@ -265,7 +265,14 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
         browser = None
         try:
             from browser_use import Agent
-            from browser_use.browser import BrowserConfig, Browser
+            try:
+                # browser-use >= 0.2.x (new API)
+                from browser_use import BrowserSession, BrowserProfile
+                use_new_api = True
+            except ImportError:
+                # browser-use < 0.2.x (old API)
+                from browser_use.browser import BrowserConfig, Browser
+                use_new_api = False
 
             # 检查是否已取消
             if cancel_event and cancel_event.is_set():
@@ -274,22 +281,50 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                 return
 
             llm     = build_llm(cfg)
-            browser = Browser(config=BrowserConfig(headless=headless))
+
+            # 自动检测系统 Chrome/Chromium 路径
+            import shutil
+            browser_binary = os.environ.get("BROWSER_BINARY_PATH")
+            if not browser_binary:
+                for name in ("chromium-browser", "chromium", "google-chrome-stable", "google-chrome"):
+                    path = shutil.which(name)
+                    if path:
+                        browser_binary = path
+                        break
+
+            if use_new_api:
+                # browser-use >= 0.2.x: 使用 BrowserSession + BrowserProfile
+                profile_kwargs = {"headless": headless}
+                if browser_binary:
+                    profile_kwargs["executable_path"] = browser_binary
+                    log(f"🔧 使用系统浏览器: {browser_binary}")
+                browser_profile = BrowserProfile(**profile_kwargs)
+                browser = BrowserSession(browser_profile=browser_profile)
+            else:
+                # browser-use < 0.2.x: 使用 BrowserConfig + Browser
+                browser_cfg = BrowserConfig(headless=headless)
+                if browser_binary:
+                    if hasattr(browser_cfg, "browser_binary_path"):
+                        browser_cfg.browser_binary_path = browser_binary
+                    elif hasattr(browser_cfg, "chrome_instance_path"):
+                        browser_cfg.chrome_instance_path = browser_binary
+                    log(f"🔧 使用系统浏览器: {browser_binary}")
+                browser = Browser(config=browser_cfg)
             log("\U0001f310 \u6d4f\u89c8\u5668\u5df2\u542f\u52a8...")
 
-            # 尝试加载已保存的 cookies
-            try:
-                pb = browser.playwright_browser
-                if pb and pb.contexts:
-                    ctx = pb.contexts[0]
-                    # 从任务文本中提取可能的域名
-                    for domain in ["facebook.com", "1688.com", "google.com"]:
-                        if domain in task_text.lower():
-                            loaded = await load_cookies(ctx, domain)
-                            if loaded:
-                                log(f"\U0001f36a \u5df2\u52a0\u8f7d {domain} \u7684\u767b\u5f55\u72b6\u6001")
-            except Exception:
-                pass
+            # 尝试加载已保存的 cookies (仅旧 API 支持)
+            if not use_new_api:
+                try:
+                    pb = browser.playwright_browser
+                    if pb and pb.contexts:
+                        ctx = pb.contexts[0]
+                        for domain in ["facebook.com", "1688.com", "google.com"]:
+                            if domain in task_text.lower():
+                                loaded = await load_cookies(ctx, domain)
+                                if loaded:
+                                    log(f"\U0001f36a \u5df2\u52a0\u8f7d {domain} \u7684\u767b\u5f55\u72b6\u6001")
+                except Exception:
+                    pass
 
             # 截图后台任务
             screenshot_on = True
@@ -298,17 +333,27 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                     if cancel_event and cancel_event.is_set():
                         break
                     try:
-                        pb = browser.playwright_browser
-                        if pb and pb.contexts:
-                            pages = pb.contexts[0].pages
-                            if pages:
-                                img = await pages[-1].screenshot(type="jpeg", quality=55)
-                                store["screenshot"] = base64.b64encode(img).decode()
+                        if use_new_api:
+                            # 新 API: 通过 BrowserSession 获取截图
+                            if hasattr(browser, 'get_screenshot'):
+                                img = await browser.get_screenshot()
+                                if img:
+                                    store["screenshot"] = base64.b64encode(img).decode()
+                        else:
+                            pb = browser.playwright_browser
+                            if pb and pb.contexts:
+                                pages = pb.contexts[0].pages
+                                if pages:
+                                    img = await pages[-1].screenshot(type="jpeg", quality=55)
+                                    store["screenshot"] = base64.b64encode(img).decode()
                     except Exception:
                         pass
                     await asyncio.sleep(0.8)
 
-            agent   = Agent(task=task_text, llm=llm, browser=browser)
+            if use_new_api:
+                agent = Agent(task=task_text, llm=llm, browser_session=browser)
+            else:
+                agent = Agent(task=task_text, llm=llm, browser=browser)
             cap_t   = asyncio.create_task(capture())
             log("\u2699\ufe0f  AI \u5f00\u59cb\u5206\u6790\u4efb\u52a1...")
 
@@ -334,17 +379,18 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
             screenshot_on = False
             cap_t.cancel()
 
-            # 任务完成后保存 cookies
-            try:
-                pb = browser.playwright_browser
-                if pb and pb.contexts:
-                    ctx = pb.contexts[0]
-                    for domain in ["facebook.com", "1688.com", "google.com"]:
-                        if domain in task_text.lower():
-                            await save_cookies_async(ctx, domain)
-                            log(f"\U0001f36a \u5df2\u4fdd\u5b58 {domain} \u7684\u767b\u5f55\u72b6\u6001")
-            except Exception:
-                pass
+            # 任务完成后保存 cookies (仅旧 API 支持)
+            if not use_new_api:
+                try:
+                    pb = browser.playwright_browser
+                    if pb and pb.contexts:
+                        ctx = pb.contexts[0]
+                        for domain in ["facebook.com", "1688.com", "google.com"]:
+                            if domain in task_text.lower():
+                                await save_cookies_async(ctx, domain)
+                                log(f"\U0001f36a \u5df2\u4fdd\u5b58 {domain} \u7684\u767b\u5f55\u72b6\u6001")
+                except Exception:
+                    pass
 
             await browser.close()
             browser = None
