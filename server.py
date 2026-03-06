@@ -286,7 +286,9 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                 log("\u26d4 \u4efb\u52a1\u5df2\u53d6\u6d88", "error")
                 return
 
+            log("🔧 [DEBUG] 开始构建 LLM...")
             llm     = build_llm(cfg)
+            log("🔧 [DEBUG] LLM 构建成功")
 
             # 自动检测系统 Chrome/Chromium 路径
             import shutil
@@ -297,6 +299,8 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                     if path:
                         browser_binary = path
                         break
+            log(f"🔧 [DEBUG] 浏览器路径: {browser_binary or '未找到，使用默认'}")
+            log(f"🔧 [DEBUG] headless={headless}, use_new_api={use_new_api}")
 
             # 是否禁用默认扩展（uBlock Origin, ClearURLs 等），网络不通时必须禁用
             disable_ext = os.getenv("DISABLE_DEFAULT_EXTENSIONS", "true").lower() != "false"
@@ -323,8 +327,11 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                     "--disable-software-rasterizer",
                 ])
                 profile_kwargs["extra_chromium_args"] = extra_args
+                log(f"🔧 [DEBUG] BrowserProfile 参数: {profile_kwargs}")
                 browser_profile = BrowserProfile(**profile_kwargs)
+                log("🔧 [DEBUG] BrowserProfile 创建成功，开始创建 BrowserSession...")
                 browser = BrowserSession(browser_profile=browser_profile)
+                log("🔧 [DEBUG] BrowserSession 对象创建成功（尚未启动）")
             else:
                 # browser-use < 0.2.x: 使用 BrowserConfig + Browser
                 cfg_kwargs = {"headless": headless}
@@ -340,6 +347,24 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                     log(f"🔧 使用系统浏览器: {browser_binary}")
                 browser = Browser(config=browser_cfg)
             log("\U0001f310 \u6d4f\u89c8\u5668\u5df2\u542f\u52a8...")
+
+            # 检查 browser-use 版本
+            try:
+                import browser_use as _bu
+                log(f"🔧 [DEBUG] browser-use 版本: {getattr(_bu, '__version__', '未知')}")
+            except Exception:
+                pass
+
+            # 检查 playwright 是否已安装浏览器
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["python3.11", "-m", "playwright", "install", "--dry-run"],
+                    capture_output=True, text=True, timeout=10
+                )
+                log(f"🔧 [DEBUG] playwright 状态: {result.stdout[:200] if result.stdout else result.stderr[:200]}")
+            except Exception as e:
+                log(f"🔧 [DEBUG] playwright 检查失败: {e}")
 
             # 尝试加载已保存的 cookies (仅旧 API 支持)
             if not use_new_api:
@@ -379,12 +404,15 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                         pass
                     await asyncio.sleep(0.8)
 
+            log("🔧 [DEBUG] 创建 Agent 对象...")
             if use_new_api:
                 agent = Agent(task=task_text, llm=llm, browser_session=browser)
             else:
                 agent = Agent(task=task_text, llm=llm, browser=browser)
+            log("🔧 [DEBUG] Agent 创建成功")
             cap_t   = asyncio.create_task(capture())
             log("\u2699\ufe0f  AI \u5f00\u59cb\u5206\u6790\u4efb\u52a1...")
+            log(f"🔧 [DEBUG] 开始 agent.run(max_steps={max_steps}), timeout={task_timeout}s")
 
             # 带超时的任务执行
             try:
@@ -437,8 +465,11 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
             store.update(status="error", result=f"\u7f3a\u5c11\u4f9d\u8d56: {e}\n\u8bf7\u8fd0\u884c:\npip install browser-use langchain-anthropic langchain-openai")
             log(f"\u274c \u7f3a\u5c11\u4f9d\u8d56: {e}", "error")
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
             store.update(status="error", result=str(e))
             log(f"\u274c {e}", "error")
+            log(f"🔧 [DEBUG] 完整错误堆栈:\n{tb}", "error")
         finally:
             if browser:
                 try:
