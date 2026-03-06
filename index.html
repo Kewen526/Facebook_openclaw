@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Browser-Use Agent</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#080810;--surface:#0f0f1a;--s2:#141420;--s3:#1a1a2a;
+  --b1:#1a1a2e;--b2:#252540;--b3:#303050;
+  --accent:#00e5ff;--adim:rgba(0,229,255,.10);--aglow:rgba(0,229,255,.20);
+  --green:#00ff88;--red:#ff4466;--yellow:#ffcc00;--purple:#bf5fff;
+  --text:#dde0ff;--t2:#7070a0;--t3:#383858;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'JetBrains Mono',monospace;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(0,229,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(0,229,255,.02) 1px,transparent 1px);background-size:48px 48px;pointer-events:none}
+
+/* ── TopBar ── */
+.tb{display:flex;align-items:center;gap:12px;padding:0 18px;height:50px;border-bottom:1px solid var(--b1);flex-shrink:0;position:relative;z-index:10}
+.logo{width:30px;height:30px;background:var(--adim);border:1px solid rgba(0,229,255,.4);border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 0 14px var(--aglow)}
+.brand{font-family:'Syne',sans-serif;font-weight:800;font-size:14px;letter-spacing:.08em}.brand span{color:var(--accent)}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.pulse{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.stxt{font-size:10px;color:var(--t2);letter-spacing:.08em;text-transform:uppercase}
+.ic-btn{width:30px;height:30px;background:transparent;border:1px solid var(--b2);border-radius:7px;color:var(--t2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:14px;transition:all .2s}
+.ic-btn:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ── Current model pill ── */
+.model-pill{display:flex;align-items:center;gap:6px;padding:4px 10px;background:var(--s2);border:1px solid var(--b2);border-radius:20px;font-size:10px;color:var(--t2);cursor:pointer;transition:all .2s}
+.model-pill:hover{border-color:var(--accent);color:var(--text)}
+.model-pill .dot{width:5px;height:5px;border-radius:50%;background:var(--green)}
+
+/* ── Main layout ── */
+.main{display:flex;flex:1;overflow:hidden}
+.lp{width:370px;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid var(--b1);overflow:hidden}
+.rp{flex:1;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── Task area ── */
+.ta{padding:14px;border-bottom:1px solid var(--b1)}
+.lbl{font-size:9px;color:var(--t3);letter-spacing:.18em;text-transform:uppercase;margin-bottom:7px}
+textarea{width:100%;background:var(--surface);border:1px solid var(--b2);border-radius:8px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.7;padding:11px;resize:none;outline:none;transition:border-color .2s}
+textarea:focus{border-color:rgba(0,229,255,.4)}
+textarea::placeholder{color:var(--t3)}
+
+/* ── Quick chips ── */
+.qa{padding:10px 14px;border-bottom:1px solid var(--b1)}
+.qg{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:7px}
+.chip{padding:7px 9px;background:var(--surface);border:1px solid var(--b1);border-radius:6px;font-size:10px;color:var(--t2);cursor:pointer;transition:all .2s;line-height:1.4}
+.chip:hover{border-color:var(--accent);color:var(--text);background:var(--adim)}
+.ci{font-size:12px;display:block;margin-bottom:2px}
+
+/* ── Run btn ── */
+.rw{padding:12px 14px}
+.run{width:100%;padding:12px;background:var(--adim);border:1px solid var(--accent);color:var(--accent);font-family:'Syne',sans-serif;font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;border-radius:8px;cursor:pointer;transition:all .2s;box-shadow:0 0 16px var(--aglow)}
+.run:hover:not(:disabled){background:rgba(0,229,255,.18);transform:translateY(-1px);box-shadow:0 0 28px var(--aglow)}
+.run:disabled{opacity:.4;cursor:not-allowed;transform:none}
+
+/* ── Log area ── */
+.log-area{flex:1;overflow-y:auto;padding:12px 14px}
+.log-area::-webkit-scrollbar{width:3px}
+.log-area::-webkit-scrollbar-thumb{background:var(--b2);border-radius:2px}
+.ll{display:flex;gap:9px;margin-bottom:3px;font-size:11px;line-height:1.6}
+.lt{color:var(--t3);flex-shrink:0;font-size:9px;padding-top:2px}
+.lm{color:var(--t2)}
+.ll.action .lm{color:var(--accent)}
+.ll.success .lm{color:var(--green)}
+.ll.error .lm{color:var(--red)}
+.lempty{color:var(--t3);font-size:11px;text-align:center;margin-top:36px;line-height:2.2}
+
+/* ── Result ── */
+.res-area{padding:12px 14px;border-top:1px solid var(--b1);display:none}
+.res-area.show{display:block}
+.res-box{background:var(--surface);border:1px solid var(--b2);border-radius:7px;padding:11px;font-size:11px;line-height:1.8;color:var(--text);white-space:pre-wrap;word-break:break-word;max-height:160px;overflow-y:auto}
+.res-box.ok{border-color:rgba(0,255,136,.2)}
+.res-box.err{border-color:rgba(255,68,102,.2);color:var(--red)}
+
+/* ── Browser view ── */
+.bbr{display:flex;align-items:center;gap:8px;padding:0 14px;height:40px;border-bottom:1px solid var(--b1);flex-shrink:0}
+.bds{display:flex;gap:4px}
+.bd{width:8px;height:8px;border-radius:50%}
+.bdr{background:#ff5f57}.bdy{background:#ffbd2e}.bdg{background:#28c841}
+.urlbar{flex:1;height:24px;background:var(--surface);border:1px solid var(--b2);border-radius:5px;padding:0 9px;font-size:10px;color:var(--t2);display:flex;align-items:center;overflow:hidden;white-space:nowrap}
+.bview{flex:1;position:relative;overflow:hidden;background:var(--surface);display:flex;align-items:center;justify-content:center}
+.bph{text-align:center;color:var(--t3);font-size:11px;line-height:2.2}
+.bph .big{font-size:36px;display:block;margin-bottom:10px}
+#bimg{width:100%;height:100%;object-fit:contain;display:none}
+.scan{position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--accent),transparent);animation:scan 2s linear infinite;display:none}
+@keyframes scan{0%{top:0;opacity:.8}100%{top:100%;opacity:0}}
+
+/* ══════════════════════════════════════════
+   Settings Modal
+══════════════════════════════════════════ */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(5px);z-index:100;display:none;align-items:center;justify-content:center}
+.overlay.show{display:flex}
+.modal{background:var(--s2);border:1px solid var(--b2);border-radius:14px;width:560px;max-width:96vw;max-height:90vh;overflow-y:auto;animation:min .2s ease}
+@keyframes min{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.modal::-webkit-scrollbar{width:4px}
+.modal::-webkit-scrollbar-thumb{background:var(--b2)}
+
+.mhead{padding:22px 24px 0;display:flex;align-items:center;justify-content:space-between}
+.mtitle{font-family:'Syne',sans-serif;font-size:16px;font-weight:800;letter-spacing:.05em}
+.mclose{width:28px;height:28px;background:transparent;border:1px solid var(--b2);border-radius:6px;color:var(--t2);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:all .2s}
+.mclose:hover{border-color:var(--red);color:var(--red)}
+
+/* Provider tabs */
+.ptabs{display:flex;gap:5px;flex-wrap:wrap;padding:18px 24px 0}
+.ptab{padding:5px 11px;border:1px solid var(--b2);border-radius:6px;font-size:10px;color:var(--t2);cursor:pointer;background:transparent;transition:all .2s;display:flex;align-items:center;gap:4px}
+.ptab:hover{border-color:var(--b3);color:var(--text)}
+.ptab.act{border-color:var(--accent);color:var(--accent);background:var(--adim)}
+
+/* Model list */
+.mbody{padding:16px 24px}
+.section-title{font-size:9px;color:var(--t3);letter-spacing:.16em;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.section-title::after{content:'';flex:1;height:1px;background:var(--b1)}
+
+.model-cards{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
+.mcard{padding:11px 13px;background:var(--surface);border:1px solid var(--b1);border-radius:8px;cursor:pointer;transition:all .2s;display:flex;align-items:flex-start;gap:10px}
+.mcard:hover{border-color:var(--b2)}
+.mcard.sel{border-color:var(--accent);background:var(--adim)}
+.mcard-radio{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--b3);flex-shrink:0;margin-top:2px;transition:all .2s;display:flex;align-items:center;justify-content:center}
+.mcard.sel .mcard-radio{border-color:var(--accent);background:var(--accent)}
+.mcard.sel .mcard-radio::after{content:'';width:5px;height:5px;border-radius:50%;background:var(--bg)}
+.mcard-info{flex:1}
+.mcard-name{font-size:12px;color:var(--text);margin-bottom:3px;font-weight:600}
+.mcard-note{font-size:10px;color:var(--t2);line-height:1.4}
+.tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:5px}
+.tag{padding:1px 6px;border-radius:4px;font-size:9px;border:1px solid var(--b2);color:var(--t2)}
+.tag.rec{border-color:rgba(0,229,255,.3);color:var(--accent)}
+.tag.vis{border-color:rgba(191,95,255,.3);color:var(--purple)}
+.tag.fast{border-color:rgba(0,255,136,.2);color:var(--green)}
+.tag.cheap{border-color:rgba(255,204,0,.2);color:var(--yellow)}
+
+/* Key input */
+.key-row{display:flex;gap:8px;align-items:center}
+.key-input{flex:1;background:var(--surface);border:1px solid var(--b2);border-radius:7px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;padding:9px 11px;outline:none;transition:border-color .2s}
+.key-input:focus{border-color:rgba(0,229,255,.4)}
+.key-link{font-size:10px;color:var(--accent);text-decoration:none;white-space:nowrap;padding:6px 8px;border:1px solid rgba(0,229,255,.2);border-radius:6px;transition:all .2s}
+.key-link:hover{background:var(--adim)}
+.key-hint{font-size:10px;color:var(--t3);margin-top:5px;line-height:1.5}
+
+.mfooter{padding:14px 24px 20px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--b1);margin-top:8px}
+.btn-c{padding:8px 16px;background:transparent;border:1px solid var(--b2);border-radius:7px;color:var(--t2);font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;transition:all .2s}
+.btn-c:hover{border-color:var(--t2);color:var(--text)}
+.btn-s{padding:8px 18px;background:var(--adim);border:1px solid var(--accent);border-radius:7px;color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;cursor:pointer;transition:all .2s}
+.btn-s:hover{background:rgba(0,229,255,.18)}
+
+/* spinner */
+.sp{display:inline-block;width:10px;height:10px;border:1.5px solid var(--b2);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:5px}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<!-- TopBar -->
+<div class="tb">
+  <div class="logo">🤖</div>
+  <div class="brand">BROWSER<span>-USE</span></div>
+  <div class="tb-right">
+    <div class="model-pill" onclick="openSettings()" id="model-pill">
+      <span class="dot"></span>
+      <span id="pill-txt">加载中...</span>
+      <span style="color:var(--t3)">▾</span>
+    </div>
+    <span class="pulse" id="sdot"></span>
+    <span class="stxt" id="stxt">READY</span>
+    <button class="ic-btn" onclick="openSettings()" title="设置">⚙️</button>
+  </div>
+</div>
+
+<!-- Main -->
+<div class="main">
+  <div class="lp">
+    <div class="ta">
+      <div class="lbl">任务描述</div>
+      <textarea id="ti" rows="5" placeholder="用自然语言描述任务...&#10;&#10;例：打开 Facebook 小组，找出寻找中国代发货供应商的帖子"></textarea>
+    </div>
+    <div class="qa">
+      <div class="lbl">快捷任务</div>
+      <div class="qg">
+        <div class="chip" onclick="fill('打开 Facebook，进入指定小组，找出最新帖子中寻找中国代发货供应商或采购代理的内容，列出作者名和摘要')"><span class="ci">📦</span>找代发货客户</div>
+        <div class="chip" onclick="fill('打开 1688.com，搜索运动鞋，找出价格50元以下月销量最高的前5个商品，列出名称价格月销')"><span class="ci">🔍</span>1688 选品</div>
+        <div class="chip" onclick="fill('查询今日欧元、英镑、美元对人民币的实时汇率，列出数值')"><span class="ci">💱</span>查今日汇率</div>
+        <div class="chip" onclick="fill('打开 Google 搜索 dropshipping agent china，总结排名前5个网站提供的服务')"><span class="ci">🌐</span>竞品调研</div>
+      </div>
+    </div>
+    <div class="rw">
+      <button class="run" id="rb" onclick="runTask()">▶ 执行任务</button>
+    </div>
+    <div class="log-area" id="la">
+      <div class="lempty">🖥️<br>等待任务执行...<br><span style="font-size:10px">日志实时显示</span></div>
+    </div>
+    <div class="res-area" id="ra">
+      <div class="lbl">执行结果</div>
+      <div class="res-box" id="rb2"></div>
+    </div>
+  </div>
+
+  <div class="rp">
+    <div class="bbr">
+      <div class="bds"><div class="bd bdr"></div><div class="bd bdy"></div><div class="bd bdg"></div></div>
+      <div class="urlbar" id="ub">等待浏览器启动...</div>
+    </div>
+    <div class="bview">
+      <div class="bph" id="bph"><span class="big">🌐</span>浏览器实时画面<br><span style="color:var(--t3);font-size:10px">执行时显示</span></div>
+      <img id="bimg" alt=""/>
+      <div class="scan" id="scan"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="overlay" id="ov" onclick="closeOuter(event)">
+<div class="modal" id="modal">
+  <div class="mhead">
+    <span class="mtitle">⚙️ 模型 & API 设置</span>
+    <button class="mclose" onclick="closeSettings()">✕</button>
+  </div>
+
+  <!-- Provider tabs -->
+  <div class="ptabs" id="ptabs"></div>
+
+  <div class="mbody">
+    <!-- Model cards -->
+    <div class="section-title">选择模型</div>
+    <div class="model-cards" id="mcards"></div>
+
+    <!-- API Key -->
+    <div class="section-title" id="key-section-title">API Key</div>
+    <div class="key-row">
+      <input type="password" class="key-input" id="key-input" placeholder="输入 API Key" autocomplete="off"/>
+      <a id="key-link" href="#" target="_blank" class="key-link">申请 Key →</a>
+    </div>
+    <div class="key-hint" id="key-hint">Key 保存在服务器本地，不会上传到任何第三方</div>
+  </div>
+
+  <div class="mfooter">
+    <button class="btn-c" onclick="closeSettings()">取消</button>
+    <button class="btn-s" id="save-btn" onclick="saveSettings()">💾 保存</button>
+  </div>
+</div>
+</div>
+
+<script>
+let providers = {};
+let cfg = { provider:'anthropic', model:'claude-sonnet-4-6', api_keys:{} };
+let selProvider = 'anthropic';
+let selModel = 'claude-sonnet-4-6';
+let evtSrc = null;
+
+async function init() {
+  try {
+    [providers, cfg] = await Promise.all([
+      fetch('/api/providers').then(r=>r.json()),
+      fetch('/api/config').then(r=>r.json())
+    ]);
+    selProvider = cfg.provider || 'anthropic';
+    selModel    = cfg.model    || 'claude-sonnet-4-6';
+    updatePill();
+  } catch(e){ console.error(e) }
+}
+
+function updatePill(){
+  const p = providers[selProvider];
+  const m = p?.models?.find(x=>x.id===selModel);
+  document.getElementById('pill-txt').textContent =
+    `${p?.flag||''} ${m?.name||selModel}`;
+}
+
+function fill(t){ document.getElementById('ti').value=t }
+
+async function runTask(){
+  const task = document.getElementById('ti').value.trim();
+  if(!task){alert('请输入任务');return}
+  if(evtSrc){evtSrc.close();evtSrc=null}
+
+  document.getElementById('la').innerHTML='';
+  document.getElementById('ra').classList.remove('show');
+  document.getElementById('bph').style.display='flex';
+  document.getElementById('bimg').style.display='none';
+  document.getElementById('scan').style.display='block';
+  setStatus('run','执行中');
+
+  const btn=document.getElementById('rb');
+  btn.disabled=true;
+  btn.innerHTML='<span class="sp"></span>执行中...';
+
+  try{
+    const res=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task})});
+    if(!res.ok){const e=await res.json();addLog({time:'--:--',msg:'❌ '+(e.error||'启动失败'),type:'error'});reset();return}
+    const {task_id}=await res.json();
+    evtSrc=new EventSource(`/api/stream/${task_id}`);
+    evtSrc.onmessage=e=>{
+      const d=JSON.parse(e.data);
+      if(d.type==='log') addLog(d);
+      else if(d.type==='screenshot') showShot(d.data);
+      else if(d.type==='end'){evtSrc.close();showResult(d.status,d.result);reset();setStatus('ok',d.status==='done'?'完成':'失败');document.getElementById('scan').style.display='none'}
+    };
+    evtSrc.onerror=()=>{evtSrc.close();addLog({time:'--:--',msg:'连接中断',type:'error'});reset();setStatus('ok','READY');document.getElementById('scan').style.display='none'};
+  }catch(e){addLog({time:'--:--',msg:'网络错误:'+e.message,type:'error'});reset()}
+}
+
+function addLog(e){
+  const a=document.getElementById('la');
+  a.querySelector('.lempty')?.remove();
+  const d=document.createElement('div');
+  d.className=`ll ${e.type||''}`;
+  d.innerHTML=`<span class="lt">${e.time}</span><span class="lm">${esc(e.msg)}</span>`;
+  a.appendChild(d);a.scrollTop=a.scrollHeight;
+}
+function showShot(b64){
+  const img=document.getElementById('bimg'),ph=document.getElementById('bph');
+  img.src='data:image/jpeg;base64,'+b64;img.style.display='block';ph.style.display='none';
+  document.getElementById('ub').textContent='🔴 LIVE · AI 正在操控浏览器...';
+}
+function showResult(s,r){
+  const a=document.getElementById('ra'),b=document.getElementById('rb2');
+  a.classList.add('show');b.textContent=r||(s==='done'?'✅ 完成':'❌ 失败');
+  b.className='res-box '+(s==='done'?'ok':'err');
+  document.getElementById('ub').textContent=s==='done'?'✅ 任务完成':'❌ 失败';
+}
+function reset(){const b=document.getElementById('rb');b.disabled=false;b.textContent='▶ 执行任务'}
+function setStatus(s,t){
+  document.getElementById('sdot').style.background=s==='run'?'var(--accent)':'var(--green)';
+  document.getElementById('stxt').textContent=t.toUpperCase();
+}
+
+/* ── Settings ── */
+function openSettings(){ buildModal(); document.getElementById('ov').classList.add('show') }
+function closeSettings(){ document.getElementById('ov').classList.remove('show') }
+function closeOuter(e){ if(e.target===document.getElementById('ov'))closeSettings() }
+
+function buildModal(){
+  // Provider tabs
+  const pt=document.getElementById('ptabs');
+  pt.innerHTML='';
+  Object.entries(providers).forEach(([id,p])=>{
+    const b=document.createElement('button');
+    b.className='ptab'+(id===selProvider?' act':'');
+    b.innerHTML=`${p.flag||''} ${p.name}`;
+    b.onclick=()=>{ selProvider=id; buildModal() };
+    pt.appendChild(b);
+  });
+
+  // Model cards
+  const mc=document.getElementById('mcards');
+  mc.innerHTML='';
+  const p=providers[selProvider];
+  (p?.models||[]).forEach(m=>{
+    const c=document.createElement('div');
+    c.className='mcard'+(m.id===selModel?' sel':'');
+    const tagsHtml=m.tags.map(t=>{
+      let cls='tag';
+      if(t.includes('推荐')||t.includes('旗舰'))cls+=' rec';
+      else if(t.includes('视觉'))cls+=' vis';
+      else if(t.includes('快')||t.includes('速'))cls+=' fast';
+      else if(t.includes('便宜')||t.includes('免费')||t.includes('低'))cls+=' cheap';
+      return `<span class="${cls}">${t}</span>`;
+    }).join('');
+    c.innerHTML=`
+      <div class="mcard-radio"></div>
+      <div class="mcard-info">
+        <div class="mcard-name">${m.name}</div>
+        <div class="mcard-note">${m.note||''}</div>
+        <div class="tags">${tagsHtml}</div>
+      </div>`;
+    c.onclick=()=>{ selModel=m.id; buildModal() };
+    mc.appendChild(c);
+  });
+
+  // Key input
+  const ki=document.getElementById('key-input');
+  ki.value=cfg.api_keys?.[selProvider]||'';
+  ki.placeholder=p?.key_placeholder||'输入 API Key';
+  document.getElementById('key-section-title').textContent=`${p?.flag||''} ${p?.name||''} API Key`;
+  const kl=document.getElementById('key-link');
+  kl.href=p?.key_url||'#';
+  kl.textContent=p?.key_url?'申请 Key →':'';
+  document.getElementById('key-hint').textContent='Key 仅保存在你的服务器本地，不会上传';
+}
+
+async function saveSettings(){
+  const key=document.getElementById('key-input').value.trim();
+  const api_keys={};
+  if(key && !key.includes('•')) api_keys[selProvider]=key;
+
+  try{
+    await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({provider:selProvider,model:selModel,api_keys})});
+    cfg.provider=selProvider; cfg.model=selModel;
+    if(key&&!key.includes('•')){cfg.api_keys=cfg.api_keys||{};cfg.api_keys[selProvider]=key}
+    updatePill();
+    closeSettings();
+    const b=document.getElementById('save-btn');
+    b.textContent='✅ 已保存';setTimeout(()=>b.textContent='💾 保存',1500);
+  }catch(e){alert('保存失败:'+e.message)}
+}
+
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+flask
+browser-use
+langchain-anthropic
+langchain-openai
+python-dotenv
