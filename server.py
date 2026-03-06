@@ -312,6 +312,17 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                 if browser_binary:
                     profile_kwargs["executable_path"] = browser_binary
                     log(f"🔧 使用系统浏览器: {browser_binary}")
+                # 增加浏览器启动超时（默认30s太短，服务器环境需要更长）
+                profile_kwargs["browser_connect_timeout"] = 120
+                # 额外的 Chromium 参数，加速无头启动
+                extra_args = profile_kwargs.get("extra_chromium_args", [])
+                extra_args.extend([
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-software-rasterizer",
+                ])
+                profile_kwargs["extra_chromium_args"] = extra_args
                 browser_profile = BrowserProfile(**profile_kwargs)
                 browser = BrowserSession(browser_profile=browser_profile)
             else:
