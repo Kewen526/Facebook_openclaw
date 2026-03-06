@@ -15,6 +15,11 @@ try:
 except ImportError:
     pass
 
+# 修复 browser-use 0.12.x 浏览器启动超时问题
+# 默认 30s 对服务器环境太短，通过环境变量覆盖为 120s
+os.environ.setdefault("TIMEOUT_BrowserStartEvent", "120")
+os.environ.setdefault("TIMEOUT_BrowserLaunchEvent", "120")
+
 app = Flask(__name__, static_folder="static")
 CONFIG_FILE = Path("config.json")
 SESSION_DIR = Path("sessions")
