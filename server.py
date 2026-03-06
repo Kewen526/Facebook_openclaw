@@ -470,19 +470,30 @@ def delete_session(domain):
 def stream(tid):
     def gen():
         li, ls = 0, ""
+        NL = "\n\n"
         while True:
             if tid not in task_store:
-                yield f"data: {json.dumps({'type':'error','msg':'\u4efb\u52a1\u4e0d\u5b58\u5728'})}\n\n"; break
+                msg = json.dumps({"type": "error", "msg": "任务不存在"})
+                yield f"data: {msg}{NL}"
+                break
             s = task_store[tid]
             while li < len(s["logs"]):
-                yield f"data: {json.dumps({'type':'log', **s['logs'][li]})}\n\n"; li += 1
-            shot = s.get("screenshot","")
+                msg = json.dumps({"type": "log", **s["logs"][li]})
+                yield f"data: {msg}{NL}"
+                li += 1
+            shot = s.get("screenshot", "")
             if shot and shot != ls:
-                yield f"data: {json.dumps({'type':'screenshot','data':shot})}\n\n"; ls = shot
-            if s["status"] in ("done","error"):
+                msg = json.dumps({"type": "screenshot", "data": shot})
+                yield f"data: {msg}{NL}"
+                ls = shot
+            if s["status"] in ("done", "error"):
                 while li < len(s["logs"]):
-                    yield f"data: {json.dumps({'type':'log',**s['logs'][li]})}\n\n"; li+=1
-                yield f"data: {json.dumps({'type':'end','status':s['status'],'result':s['result']})}\n\n"; break
+                    msg = json.dumps({"type": "log", **s["logs"][li]})
+                    yield f"data: {msg}{NL}"
+                    li += 1
+                msg = json.dumps({"type": "end", "status": s["status"], "result": s["result"]})
+                yield f"data: {msg}{NL}"
+                break
             time.sleep(0.5)
     return Response(gen(), mimetype="text/event-stream",
                     headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
