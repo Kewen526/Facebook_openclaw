@@ -298,9 +298,17 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                         browser_binary = path
                         break
 
+            # 是否禁用默认扩展（uBlock Origin, ClearURLs 等），网络不通时必须禁用
+            disable_ext = os.getenv("DISABLE_DEFAULT_EXTENSIONS", "true").lower() != "false"
+
             if use_new_api:
                 # browser-use >= 0.2.x: 使用 BrowserSession + BrowserProfile
                 profile_kwargs = {"headless": headless}
+                if not disable_ext:
+                    pass  # 保持默认 enable_default_extensions=True
+                else:
+                    profile_kwargs["enable_default_extensions"] = False
+                    log("🔧 已禁用默认浏览器扩展（uBlock Origin, ClearURLs 等）")
                 if browser_binary:
                     profile_kwargs["executable_path"] = browser_binary
                     log(f"🔧 使用系统浏览器: {browser_binary}")
@@ -308,7 +316,11 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                 browser = BrowserSession(browser_profile=browser_profile)
             else:
                 # browser-use < 0.2.x: 使用 BrowserConfig + Browser
-                browser_cfg = BrowserConfig(headless=headless)
+                cfg_kwargs = {"headless": headless}
+                if disable_ext:
+                    cfg_kwargs["enable_default_extensions"] = False
+                    log("🔧 已禁用默认浏览器扩展（uBlock Origin, ClearURLs 等）")
+                browser_cfg = BrowserConfig(**cfg_kwargs)
                 if browser_binary:
                     if hasattr(browser_cfg, "browser_binary_path"):
                         browser_cfg.browser_binary_path = browser_binary
