@@ -53,10 +53,13 @@ textarea::placeholder{color:var(--t3)}
 .ci{font-size:12px;display:block;margin-bottom:2px}
 
 /* ── Run btn ── */
-.rw{padding:12px 14px}
-.run{width:100%;padding:12px;background:var(--adim);border:1px solid var(--accent);color:var(--accent);font-family:'Syne',sans-serif;font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;border-radius:8px;cursor:pointer;transition:all .2s;box-shadow:0 0 16px var(--aglow)}
+.rw{padding:12px 14px;display:flex;gap:8px}
+.run{flex:1;padding:12px;background:var(--adim);border:1px solid var(--accent);color:var(--accent);font-family:'Syne',sans-serif;font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;border-radius:8px;cursor:pointer;transition:all .2s;box-shadow:0 0 16px var(--aglow)}
 .run:hover:not(:disabled){background:rgba(0,229,255,.18);transform:translateY(-1px);box-shadow:0 0 28px var(--aglow)}
 .run:disabled{opacity:.4;cursor:not-allowed;transform:none}
+.cancel{padding:12px 16px;background:transparent;border:1px solid var(--red);color:var(--red);font-family:'Syne',sans-serif;font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;border-radius:8px;cursor:pointer;transition:all .2s;display:none}
+.cancel:hover{background:rgba(255,68,102,.12)}
+.cancel.show{display:block}
 
 /* ── Log area ── */
 .log-area{flex:1;overflow-y:auto;padding:12px 14px}
@@ -188,6 +191,7 @@ textarea::placeholder{color:var(--t3)}
     </div>
     <div class="rw">
       <button class="run" id="rb" onclick="runTask()">▶ 执行任务</button>
+      <button class="cancel" id="cb" onclick="cancelTask()">■ 取消</button>
     </div>
     <div class="log-area" id="la">
       <div class="lempty">🖥️<br>等待任务执行...<br><span style="font-size:10px">日志实时显示</span></div>
@@ -249,6 +253,7 @@ let cfg = { provider:'anthropic', model:'claude-sonnet-4-6', api_keys:{} };
 let selProvider = 'anthropic';
 let selModel = 'claude-sonnet-4-6';
 let evtSrc = null;
+let currentTaskId = null;
 
 async function init() {
   try {
@@ -286,19 +291,21 @@ async function runTask(){
   const btn=document.getElementById('rb');
   btn.disabled=true;
   btn.innerHTML='<span class="sp"></span>执行中...';
+  document.getElementById('cb').classList.add('show');
 
   try{
     const res=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task})});
     if(!res.ok){const e=await res.json();addLog({time:'--:--',msg:'❌ '+(e.error||'启动失败'),type:'error'});reset();return}
     const {task_id}=await res.json();
+    currentTaskId=task_id;
     evtSrc=new EventSource(`/api/stream/${task_id}`);
     evtSrc.onmessage=e=>{
       const d=JSON.parse(e.data);
       if(d.type==='log') addLog(d);
       else if(d.type==='screenshot') showShot(d.data);
-      else if(d.type==='end'){evtSrc.close();showResult(d.status,d.result);reset();setStatus('ok',d.status==='done'?'完成':'失败');document.getElementById('scan').style.display='none'}
+      else if(d.type==='end'){evtSrc.close();currentTaskId=null;showResult(d.status,d.result);reset();setStatus('ok',d.status==='done'?'完成':'失败');document.getElementById('scan').style.display='none'}
     };
-    evtSrc.onerror=()=>{evtSrc.close();addLog({time:'--:--',msg:'连接中断',type:'error'});reset();setStatus('ok','READY');document.getElementById('scan').style.display='none'};
+    evtSrc.onerror=()=>{evtSrc.close();currentTaskId=null;addLog({time:'--:--',msg:'连接中断',type:'error'});reset();setStatus('ok','READY');document.getElementById('scan').style.display='none'};
   }catch(e){addLog({time:'--:--',msg:'网络错误:'+e.message,type:'error'});reset()}
 }
 
@@ -321,7 +328,15 @@ function showResult(s,r){
   b.className='res-box '+(s==='done'?'ok':'err');
   document.getElementById('ub').textContent=s==='done'?'✅ 任务完成':'❌ 失败';
 }
-function reset(){const b=document.getElementById('rb');b.disabled=false;b.textContent='▶ 执行任务'}
+function reset(){const b=document.getElementById('rb');b.disabled=false;b.textContent='▶ 执行任务';document.getElementById('cb').classList.remove('show')}
+
+async function cancelTask(){
+  if(!currentTaskId)return;
+  try{
+    await fetch(`/api/cancel/${currentTaskId}`,{method:'POST'});
+    document.getElementById('cb').classList.remove('show');
+  }catch(e){addLog({time:'--:--',msg:'取消失败:'+e.message,type:'error'})}
+}
 function setStatus(s,t){
   document.getElementById('sdot').style.background=s==='run'?'var(--accent)':'var(--green)';
   document.getElementById('stxt').textContent=t.toUpperCase();
