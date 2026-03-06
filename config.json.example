@@ -1,0 +1,12 @@
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-6",
+  "api_keys": {
+    "anthropic": "",
+    "openai": "",
+    "deepseek": "",
+    "kimi": "",
+    "zhipu": "",
+    "qwen": ""
+  }
+}

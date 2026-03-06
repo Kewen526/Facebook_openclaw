@@ -3,7 +3,7 @@
 # 适用于 Ubuntu/Debian 服务器
 
 set -e
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")"
 
 echo "======================================"
 echo "  Facebook_openclaw 部署"

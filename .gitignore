@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# Environment & Config (contain secrets)
+.env
+config.json
+
+# Session data
+sessions/
+
+# Logs
+*.log
+server.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
