@@ -274,7 +274,25 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                 return
 
             llm     = build_llm(cfg)
-            browser = Browser(config=BrowserConfig(headless=headless))
+
+            # 自动检测系统 Chrome/Chromium 路径（playwright install 失败时使用）
+            import shutil
+            browser_binary = os.environ.get("BROWSER_BINARY_PATH")
+            if not browser_binary:
+                for name in ("chromium-browser", "chromium", "google-chrome-stable", "google-chrome"):
+                    path = shutil.which(name)
+                    if path:
+                        browser_binary = path
+                        break
+            browser_cfg = BrowserConfig(headless=headless)
+            if browser_binary:
+                # 兼容不同版本的 browser-use API
+                if hasattr(browser_cfg, "browser_binary_path"):
+                    browser_cfg.browser_binary_path = browser_binary
+                elif hasattr(browser_cfg, "chrome_instance_path"):
+                    browser_cfg.chrome_instance_path = browser_binary
+                log(f"🔧 使用系统浏览器: {browser_binary}")
+            browser = Browser(config=browser_cfg)
             log("\U0001f310 \u6d4f\u89c8\u5668\u5df2\u542f\u52a8...")
 
             # 尝试加载已保存的 cookies
