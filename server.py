@@ -247,15 +247,20 @@ async def save_cookies_async(browser_context, domain: str):
     except Exception:
         pass
 
-# ── JSON 清洗：兼容国产模型 (智谱/Kimi/Qwen 等) 输出格式 ──────────
+# ── JSON 清洗 + 结构转换：兼容国产模型 (智谱/Kimi/Qwen 等) ──────────
+#
+# 国产模型 (GLM/Kimi/Qwen) 不完整支持 OpenAI structured output，常见问题：
+#   1. JSON 被 ```json ... ``` 或 <output>...</output> 包裹
+#   2. 返回多余字段 → Pydantic extra='forbid' 报错
+#   3. 缺少必需字段 (action, memory 等)
+#   4. 字段类型错误 (current_plan_item: "Step 4" → 应为 int)
+#   5. 字段名不一致 (actions → action, eval → evaluation_previous_goal)
+#   6. 字段嵌套在 current_state 里而非顶层
+#
+# 解决方案：拦截原始输出 → 全面结构转换 → 再交给 Pydantic 解析
 
-def _clean_llm_json(raw: str) -> str:
-    """
-    剥离 LLM 返回中常见的非 JSON 包裹：
-      - Markdown 代码块:  ```json ... ```  或  ``` ... ```
-      - XML 标签:  <output> ... </output>
-    只保留最外层的 JSON 对象 { ... }
-    """
+def _extract_json_str(raw: str) -> str:
+    """从 LLM 原始输出中提取 JSON 字符串"""
     s = raw.strip()
     # 1) 去掉 markdown 代码块
     m = re.search(r'```(?:json)?\s*\n?(.*?)```', s, re.DOTALL)
@@ -265,7 +270,7 @@ def _clean_llm_json(raw: str) -> str:
     m2 = re.search(r'<\w+>\s*(.*?)\s*</\w+>', s, re.DOTALL)
     if m2 and m2.group(1).strip().startswith('{'):
         s = m2.group(1).strip()
-    # 3) 保险：截取第一个 { 到最后一个 } 之间的内容
+    # 3) 截取第一个 { 到最后一个 }
     if not s.startswith('{'):
         start = s.find('{')
         end = s.rfind('}')
@@ -274,22 +279,109 @@ def _clean_llm_json(raw: str) -> str:
     return s
 
 
+def _transform_for_schema(raw_json: str, output_format) -> str:
+    """
+    全面转换 JSON 使其符合 output_format (AgentOutput) 的 Pydantic schema。
+    处理多余字段、缺失字段、类型错误、字段名映射等所有问题。
+    """
+    try:
+        data = json.loads(raw_json)
+    except (json.JSONDecodeError, TypeError):
+        return raw_json  # 无法解析，原样返回让 Pydantic 报错
+
+    if not isinstance(data, dict):
+        return raw_json
+
+    # ── 获取 schema 中的合法字段列表 ──
+    try:
+        schema = output_format.model_json_schema()
+        valid_fields = set(schema.get('properties', {}).keys())
+    except Exception:
+        valid_fields = {
+            'thinking', 'evaluation_previous_goal', 'memory',
+            'next_goal', 'current_plan_item', 'plan_update', 'action'
+        }
+
+    # ── 展平嵌套的 current_state ──
+    if 'current_state' in data and isinstance(data['current_state'], dict):
+        cs = data.pop('current_state')
+        for k, v in cs.items():
+            if k not in data:
+                data[k] = v
+
+    # ── 字段名映射 (国产模型常用的替代名称) ──
+    _FIELD_ALIASES = {
+        'eval': 'evaluation_previous_goal',
+        'evaluation': 'evaluation_previous_goal',
+        'prev_goal_eval': 'evaluation_previous_goal',
+        'previous_goal_evaluation': 'evaluation_previous_goal',
+        'evaluationPreviousGoal': 'evaluation_previous_goal',
+        'goal': 'next_goal',
+        'next': 'next_goal',
+        'nextGoal': 'next_goal',
+        'actions': 'action',
+        'plan': 'plan_update',
+        'planUpdate': 'plan_update',
+        'memo': 'memory',
+        'thought': 'thinking',
+        'thoughts': 'thinking',
+    }
+    for alt, canonical in _FIELD_ALIASES.items():
+        if alt in data and canonical not in data:
+            data[canonical] = data.pop(alt)
+
+    # ── 过滤：只保留 schema 中定义的字段 (防止 extra='forbid' 报错) ──
+    cleaned = {}
+    for k, v in data.items():
+        if k in valid_fields:
+            cleaned[k] = v
+
+    # ── 修复 current_plan_item 类型 (string → int | None) ──
+    if 'current_plan_item' in cleaned:
+        v = cleaned['current_plan_item']
+        if isinstance(v, str):
+            nums = re.findall(r'\d+', v)
+            cleaned['current_plan_item'] = int(nums[0]) if nums else None
+        elif v is not None and not isinstance(v, int):
+            cleaned['current_plan_item'] = None
+
+    # ── 确保必需字段有默认值 ──
+    if 'evaluation_previous_goal' in valid_fields and 'evaluation_previous_goal' not in cleaned:
+        cleaned['evaluation_previous_goal'] = 'Unknown - model did not provide evaluation.'
+    if 'memory' in valid_fields and 'memory' not in cleaned:
+        cleaned['memory'] = 'No memory state provided.'
+    if 'next_goal' in valid_fields and 'next_goal' not in cleaned:
+        cleaned['next_goal'] = 'Determine the appropriate next action.'
+
+    # ── 确保 action 字段存在且为列表 ──
+    if 'action' not in cleaned:
+        cleaned['action'] = []
+    elif not isinstance(cleaned['action'], list):
+        cleaned['action'] = [cleaned['action']]
+
+    # ── 确保 plan_update 为列表 ──
+    if 'plan_update' in cleaned and not isinstance(cleaned['plan_update'], list):
+        if isinstance(cleaned['plan_update'], str):
+            cleaned['plan_update'] = [cleaned['plan_update']]
+        else:
+            cleaned['plan_update'] = []
+
+    return json.dumps(cleaned, ensure_ascii=False)
+
+
 # 需要清洗输出的 provider 列表（不完美支持 structured output 的模型）
 _PROVIDERS_NEED_CLEANING = {"zhipu", "kimi", "qwen"}
 
 
 def _make_cleaned_chat_openai(ChatOpenAICls, **kwargs):
     """
-    包装 ChatOpenAI，在解析前清洗 LLM 原始输出。
-    通过设置 dont_force_structured_output=True 避免模型不支持 json_schema 时报错，
-    并在 model_validate_json 之前清洗 markdown/XML 包裹。
+    包装 ChatOpenAI，在解析前对 LLM 原始输出做全面结构转换。
+    通过 dont_force_structured_output=True 避免模型不支持 json_schema 时报错，
+    通过 add_schema_to_system_prompt=True 在提示词中告知模型期望的 JSON 格式，
+    然后在 model_validate_json 之前做完整的 JSON 清洗 + 结构转换。
     """
-    import types
-    from browser_use.llm.openai.serializer import OpenAIMessageSerializer
-    from browser_use.llm.schema import SchemaOptimizer
     from browser_use.llm.exceptions import ModelProviderError
-    from browser_use.llm.views import ChatInvokeCompletion, ChatInvokeUsage
-    from openai.types.shared_params.response_format_json_schema import JSONSchema, ResponseFormatJSONSchema
+    from browser_use.llm.views import ChatInvokeCompletion
 
     instance = ChatOpenAICls(
         dont_force_structured_output=True,
@@ -303,36 +395,31 @@ def _make_cleaned_chat_openai(ChatOpenAICls, **kwargs):
         if output_format is None:
             return await _original_ainvoke(messages, output_format=None, **kw)
 
-        # 用无结构化输出模式调用
+        # 用无结构化输出模式调用（获取原始文本）
         result = await _original_ainvoke(messages, output_format=None, **kw)
         raw_content = result.completion
-        cleaned = _clean_llm_json(raw_content)
+
+        # 第一步：提取 JSON 字符串（去掉 markdown/XML 包裹）
+        extracted = _extract_json_str(raw_content)
+
+        # 第二步：全面结构转换（过滤多余字段、补齐缺失字段、修复类型）
+        transformed = _transform_for_schema(extracted, output_format)
+
         try:
-            parsed = output_format.model_validate_json(cleaned)
-        except Exception:
-            # 如果还是失败，尝试更激进的清洗
-            try:
-                # 尝试找到平衡的 {} 块
-                brace_count = 0
-                start_idx = cleaned.find('{')
-                if start_idx == -1:
-                    raise
-                end_idx = start_idx
-                for i in range(start_idx, len(cleaned)):
-                    if cleaned[i] == '{':
-                        brace_count += 1
-                    elif cleaned[i] == '}':
-                        brace_count -= 1
-                        if brace_count == 0:
-                            end_idx = i + 1
-                            break
-                balanced = cleaned[start_idx:end_idx]
-                parsed = output_format.model_validate_json(balanced)
-            except Exception as e2:
-                raise ModelProviderError(
-                    message=str(e2),
-                    model=instance.name,
-                ) from e2
+            parsed = output_format.model_validate_json(transformed)
+        except Exception as e:
+            # 最后的后备：记录详细错误信息以便调试
+            import logging
+            logging.getLogger('browser_use').error(
+                f'JSON transform failed.\n'
+                f'  Raw: {raw_content[:500]}\n'
+                f'  Transformed: {transformed[:500]}\n'
+                f'  Error: {e}'
+            )
+            raise ModelProviderError(
+                message=f'Model output parsing failed after transformation: {e}',
+                model=instance.name,
+            ) from e
 
         return ChatInvokeCompletion(
             completion=parsed,
