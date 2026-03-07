@@ -15,6 +15,11 @@ try:
 except ImportError:
     pass
 
+# 修复 browser-use 0.12.x 浏览器启动超时问题
+# 默认 30s 对服务器环境太短，通过环境变量覆盖为 120s
+os.environ.setdefault("TIMEOUT_BrowserStartEvent", "120")
+os.environ.setdefault("TIMEOUT_BrowserLaunchEvent", "120")
+
 app = Flask(__name__, static_folder="static")
 CONFIG_FILE = Path("config.json")
 SESSION_DIR = Path("sessions")
@@ -286,63 +291,48 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                 log("\u26d4 \u4efb\u52a1\u5df2\u53d6\u6d88", "error")
                 return
 
+            log("🔧 [DEBUG] 开始构建 LLM...")
             llm     = build_llm(cfg)
-
-            # 自动检测系统 Chrome/Chromium 路径
-            import shutil
-            browser_binary = os.environ.get("BROWSER_BINARY_PATH")
-            if not browser_binary:
-                for name in ("chromium-browser", "chromium", "google-chrome-stable", "google-chrome"):
-                    path = shutil.which(name)
-                    if path:
-                        browser_binary = path
-                        break
-
-            # 是否禁用默认扩展（uBlock Origin, ClearURLs 等），网络不通时必须禁用
-            disable_ext = os.getenv("DISABLE_DEFAULT_EXTENSIONS", "true").lower() != "false"
+            log("🔧 [DEBUG] LLM 构建成功")
 
             if use_new_api:
-                # browser-use >= 0.2.x: 使用 BrowserSession + BrowserProfile
-                profile_kwargs = {"headless": headless}
-                if not disable_ext:
-                    pass  # 保持默认 enable_default_extensions=True
-                else:
-                    profile_kwargs["enable_default_extensions"] = False
-                    log("🔧 已禁用默认浏览器扩展（uBlock Origin, ClearURLs 等）")
-                if browser_binary:
-                    profile_kwargs["executable_path"] = browser_binary
-                    log(f"🔧 使用系统浏览器: {browser_binary}")
-                browser_profile = BrowserProfile(**profile_kwargs)
+                # browser-use 0.12.x: 用 Playwright 预启动浏览器，通过 CDP URL 连接
+                # 这样绕过 browser-use 自己的子进程启动（在服务器上会卡死）
+                from playwright.async_api import async_playwright
+                log("🔧 用 Playwright 预启动 Chromium...")
+                pw = await async_playwright().start()
+                pw_browser = await pw.chromium.launch(
+                    headless=headless,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--disable-software-rasterizer",
+                    ],
+                )
+                # 获取 CDP endpoint
+                cdp_url = pw_browser.contexts[0].pages[0].url if pw_browser.contexts else None
+                # 通过 wsEndpoint 获取 CDP URL
+                cdp_ws = pw_browser._impl_obj._browser.ws_endpoint
+                log(f"🔧 Playwright 浏览器已启动, CDP: {cdp_ws}")
+
+                browser_profile = BrowserProfile(
+                    cdp_url=cdp_ws,
+                    headless=headless,
+                    enable_default_extensions=False,
+                )
                 browser = BrowserSession(browser_profile=browser_profile)
+                log("🌐 浏览器已通过 Playwright CDP 连接")
             else:
                 # browser-use < 0.2.x: 使用 BrowserConfig + Browser
+                from browser_use.browser import BrowserConfig, Browser as BUBrowser
                 cfg_kwargs = {"headless": headless}
+                disable_ext = os.getenv("DISABLE_DEFAULT_EXTENSIONS", "true").lower() != "false"
                 if disable_ext:
                     cfg_kwargs["enable_default_extensions"] = False
-                    log("🔧 已禁用默认浏览器扩展（uBlock Origin, ClearURLs 等）")
                 browser_cfg = BrowserConfig(**cfg_kwargs)
-                if browser_binary:
-                    if hasattr(browser_cfg, "browser_binary_path"):
-                        browser_cfg.browser_binary_path = browser_binary
-                    elif hasattr(browser_cfg, "chrome_instance_path"):
-                        browser_cfg.chrome_instance_path = browser_binary
-                    log(f"🔧 使用系统浏览器: {browser_binary}")
-                browser = Browser(config=browser_cfg)
-            log("\U0001f310 \u6d4f\u89c8\u5668\u5df2\u542f\u52a8...")
-
-            # 尝试加载已保存的 cookies (仅旧 API 支持)
-            if not use_new_api:
-                try:
-                    pb = browser.playwright_browser
-                    if pb and pb.contexts:
-                        ctx = pb.contexts[0]
-                        for domain in ["facebook.com", "1688.com", "google.com"]:
-                            if domain in task_text.lower():
-                                loaded = await load_cookies(ctx, domain)
-                                if loaded:
-                                    log(f"\U0001f36a \u5df2\u52a0\u8f7d {domain} \u7684\u767b\u5f55\u72b6\u6001")
-                except Exception:
-                    pass
+                browser = BUBrowser(config=browser_cfg)
+                log("\U0001f310 \u6d4f\u89c8\u5668\u5df2\u542f\u52a8...")
 
             # 截图后台任务
             screenshot_on = True
@@ -368,12 +358,15 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                         pass
                     await asyncio.sleep(0.8)
 
+            log("🔧 [DEBUG] 创建 Agent 对象...")
             if use_new_api:
                 agent = Agent(task=task_text, llm=llm, browser_session=browser)
             else:
                 agent = Agent(task=task_text, llm=llm, browser=browser)
+            log("🔧 [DEBUG] Agent 创建成功")
             cap_t   = asyncio.create_task(capture())
             log("\u2699\ufe0f  AI \u5f00\u59cb\u5206\u6790\u4efb\u52a1...")
+            log(f"🔧 [DEBUG] 开始 agent.run(max_steps={max_steps}), timeout={task_timeout}s")
 
             # 带超时的任务执行
             try:
@@ -426,14 +419,25 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
             store.update(status="error", result=f"\u7f3a\u5c11\u4f9d\u8d56: {e}\n\u8bf7\u8fd0\u884c:\npip install browser-use langchain-anthropic langchain-openai")
             log(f"\u274c \u7f3a\u5c11\u4f9d\u8d56: {e}", "error")
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
             store.update(status="error", result=str(e))
             log(f"\u274c {e}", "error")
+            log(f"🔧 [DEBUG] 完整错误堆栈:\n{tb}", "error")
         finally:
             if browser:
                 try:
                     await browser.close()
                 except Exception:
                     pass
+            # 关闭 Playwright 预启动的浏览器
+            try:
+                if 'pw_browser' in dir() and pw_browser:
+                    await pw_browser.close()
+                if 'pw' in dir() and pw:
+                    await pw.stop()
+            except Exception:
+                pass
             # 清理取消事件
             task_cancel.pop(task_id, None)
 
