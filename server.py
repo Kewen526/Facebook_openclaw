@@ -110,7 +110,14 @@ PROVIDERS = {
         "key_placeholder": "sk-...",
         "models": [
             {
-                "id": "kimi-k2",
+                "id": "kimi-k2.5",
+                "name": "Kimi K2.5",
+                "tags": ["\U0001f9e0 \u6700\u5f3a", "\U0001f441 \u89c6\u89c9", "\u2705 Tool Call"],
+                "vision": True,
+                "note": "\u6700\u65b0\u591a\u6a21\u6001\u6a21\u578b\uff0c\u652f\u6301\u89c6\u89c9+\u5de5\u5177\u8c03\u7528"
+            },
+            {
+                "id": "kimi-k2-0905-preview",
                 "name": "Kimi K2",
                 "tags": ["\U0001f9e0 \u63a8\u7406\u5f3a", "\u2705 Tool Call"],
                 "vision": False,
@@ -133,11 +140,25 @@ PROVIDERS = {
         "key_placeholder": "\u586b\u5199\u667a\u8c31 API Key",
         "models": [
             {
+                "id": "glm-4v-plus",
+                "name": "GLM-4V Plus",
+                "tags": ["\U0001f3c6 \u65d7\u8230", "\U0001f441 \u89c6\u89c9", "\u2705 Tool Call"],
+                "vision": True,
+                "note": "\u667a\u8c31\u89c6\u89c9\u65d7\u8230\u6a21\u578b\uff0c\u652f\u6301\u622a\u56fe\u7406\u89e3"
+            },
+            {
                 "id": "glm-4-plus",
                 "name": "GLM-4 Plus",
                 "tags": ["\U0001f3c6 \u65d7\u8230", "\u2705 Tool Call"],
                 "vision": False,
                 "note": "\u667a\u8c31\u6700\u5f3a\u6a21\u578b\uff0cTool Calling\u5b8c\u6574\u652f\u6301"
+            },
+            {
+                "id": "glm-4v-flash",
+                "name": "GLM-4V Flash",
+                "tags": ["\u26a1 \u6781\u5feb", "\U0001f441 \u89c6\u89c9", "\U0001f193 \u514d\u8d39"],
+                "vision": True,
+                "note": "\u514d\u8d39\u89c6\u89c9\u6a21\u578b\uff0c\u652f\u6301\u622a\u56fe\u7406\u89e3"
             },
             {
                 "id": "glm-4-flash",
@@ -351,7 +372,9 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                 ]
                 if proxy_url:
                     chrome_args.append(f"--proxy-server={proxy_url}")
-                    log(f"🔧 代理: {proxy_url}")
+                    # 强制 DNS 也走代理，避免国内 DNS 解析不了 facebook 等域名
+                    chrome_args.append("--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1")
+                    log(f"🔧 代理: {proxy_url} (DNS 也走代理)")
                 if headless:
                     chrome_args.append("--headless=new")
                 chrome_args.append("about:blank")
@@ -441,11 +464,25 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                         pass
                     await asyncio.sleep(0.8)
 
+            # 检测模型是否支持视觉
+            model_vision = True  # 默认启用
+            provider_key = cfg.get("provider", "")
+            model_id_cfg = cfg.get("model", "")
+            pinfo = PROVIDERS.get(provider_key, {})
+            for m in pinfo.get("models", []):
+                if m["id"] == model_id_cfg:
+                    model_vision = m.get("vision", True)
+                    break
+            if not model_vision:
+                log(f"⚠️ 模型 {model_id_cfg} 不支持视觉，已禁用截图分析")
+
             log("🔧 [DEBUG] 创建 Agent 对象...")
+            agent_kwargs = dict(task=task_text, llm=llm, use_vision=model_vision)
             if use_new_api:
-                agent = Agent(task=task_text, llm=llm, browser_session=browser)
+                agent_kwargs["browser_session"] = browser
             else:
-                agent = Agent(task=task_text, llm=llm, browser=browser)
+                agent_kwargs["browser"] = browser
+            agent = Agent(**agent_kwargs)
             log("🔧 [DEBUG] Agent 创建成功")
             cap_t   = asyncio.create_task(capture())
             log("\u2699\ufe0f  AI \u5f00\u59cb\u5206\u6790\u4efb\u52a1...")
