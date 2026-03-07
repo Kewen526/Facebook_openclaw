@@ -333,6 +333,9 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                 log(f"🔧 CDP 端口: {cdp_port}")
 
                 # 启动 Chromium 子进程
+                # 代理配置：优先用环境变量 BROWSER_PROXY，默认用本地 mihomo
+                proxy_url = os.environ.get("BROWSER_PROXY", "socks5://127.0.0.1:7898")
+
                 chrome_args = [
                     browser_binary,
                     f"--remote-debugging-port={cdp_port}",
@@ -346,6 +349,9 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                     "--disable-extensions",
                     "--disable-features=VizDisplayCompositor",
                 ]
+                if proxy_url:
+                    chrome_args.append(f"--proxy-server={proxy_url}")
+                    log(f"🔧 代理: {proxy_url}")
                 if headless:
                     chrome_args.append("--headless=new")
                 chrome_args.append("about:blank")
