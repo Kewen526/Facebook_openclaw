@@ -19,6 +19,8 @@ except ImportError:
 # 默认 30s 对服务器环境太短，通过环境变量覆盖为 120s
 os.environ.setdefault("TIMEOUT_BrowserStartEvent", "120")
 os.environ.setdefault("TIMEOUT_BrowserLaunchEvent", "120")
+# 增加导航超时（默认 20s 在网络慢的服务器上太短）
+os.environ.setdefault("TIMEOUT_NavigateToUrlEvent", "60")
 
 app = Flask(__name__, static_folder="static")
 CONFIG_FILE = Path("config.json")
@@ -336,13 +338,13 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                     f"--remote-debugging-port={cdp_port}",
                     "--no-first-run",
                     "--no-default-browser-check",
-                    "--disable-background-networking",
                     "--disable-sync",
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
                     "--disable-software-rasterizer",
                     "--disable-extensions",
+                    "--disable-features=VizDisplayCompositor",
                 ]
                 if headless:
                     chrome_args.append("--headless=new")
@@ -478,7 +480,11 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                 except Exception:
                     pass
 
-            await browser.close()
+            # browser-use 0.12.x: BrowserSession 用 stop() 而非 close()
+            if hasattr(browser, 'stop'):
+                await browser.stop()
+            elif hasattr(browser, 'close'):
+                await browser.close()
             browser = None
 
             result = ""
@@ -502,7 +508,10 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
         finally:
             if browser:
                 try:
-                    await browser.close()
+                    if hasattr(browser, 'stop'):
+                        await browser.stop()
+                    elif hasattr(browser, 'close'):
+                        await browser.close()
                 except Exception:
                     pass
             # 杀掉手动启动的 Chrome 子进程
