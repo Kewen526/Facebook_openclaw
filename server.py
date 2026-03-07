@@ -19,6 +19,8 @@ except ImportError:
 # 默认 30s 对服务器环境太短，通过环境变量覆盖为 120s
 os.environ.setdefault("TIMEOUT_BrowserStartEvent", "120")
 os.environ.setdefault("TIMEOUT_BrowserLaunchEvent", "120")
+# 增加导航超时（默认 20s 在网络慢的服务器上太短）
+os.environ.setdefault("TIMEOUT_NavigateToUrlEvent", "60")
 
 app = Flask(__name__, static_folder="static")
 CONFIG_FILE = Path("config.json")
@@ -295,42 +297,123 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
             llm     = build_llm(cfg)
             log("🔧 [DEBUG] LLM 构建成功")
 
+            chrome_process = None  # 追踪手动启动的 Chrome 进程
+
             if use_new_api:
-                # browser-use 0.12.x: 用 Playwright 预启动浏览器，通过 CDP URL 连接
-                # 这样绕过 browser-use 自己的子进程启动（在服务器上会卡死）
-                from playwright.async_api import async_playwright
-                log("🔧 用 Playwright 预启动 Chromium...")
-                pw = await async_playwright().start()
-                pw_browser = await pw.chromium.launch(
-                    headless=headless,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-gpu",
-                        "--disable-software-rasterizer",
-                    ],
+                # ── 终极方案：手动 subprocess 启动 Chromium + CDP ──
+                # browser-use 自己的子进程启动在服务器上会卡死，
+                # 所以我们手动启动 Chromium 并通过 CDP URL 连接。
+                import shutil, subprocess, socket, time as _time
+
+                # 找到 Chromium 二进制
+                browser_binary = os.environ.get("BROWSER_BINARY_PATH")
+                if not browser_binary:
+                    for name in ("chromium-browser", "chromium", "google-chrome-stable", "google-chrome"):
+                        path = shutil.which(name)
+                        if path:
+                            browser_binary = path
+                            break
+                if not browser_binary:
+                    # 用 Playwright 自带的 Chromium
+                    try:
+                        from playwright.sync_api import sync_playwright
+                        with sync_playwright() as p:
+                            browser_binary = p.chromium.executable_path
+                    except Exception:
+                        pass
+                log(f"🔧 浏览器路径: {browser_binary or '未找到'}")
+
+                # 选择一个空闲端口
+                cdp_port = 9222
+                for port_candidate in range(9222, 9232):
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        if s.connect_ex(("127.0.0.1", port_candidate)) != 0:
+                            cdp_port = port_candidate
+                            break
+                log(f"🔧 CDP 端口: {cdp_port}")
+
+                # 启动 Chromium 子进程
+                # 代理配置：优先用环境变量 BROWSER_PROXY，默认用本地 mihomo
+                proxy_url = os.environ.get("BROWSER_PROXY", "socks5://127.0.0.1:7898")
+
+                chrome_args = [
+                    browser_binary,
+                    f"--remote-debugging-port={cdp_port}",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-sync",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-software-rasterizer",
+                    "--disable-extensions",
+                    "--disable-features=VizDisplayCompositor",
+                ]
+                if proxy_url:
+                    chrome_args.append(f"--proxy-server={proxy_url}")
+                    log(f"🔧 代理: {proxy_url}")
+                if headless:
+                    chrome_args.append("--headless=new")
+                chrome_args.append("about:blank")
+
+                log(f"🔧 启动 Chromium: {' '.join(chrome_args[:5])}...")
+                chrome_process = subprocess.Popen(
+                    chrome_args,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                 )
-                # 获取 CDP endpoint
-                cdp_url = pw_browser.contexts[0].pages[0].url if pw_browser.contexts else None
-                # 通过 wsEndpoint 获取 CDP URL
-                cdp_ws = pw_browser._impl_obj._browser.ws_endpoint
-                log(f"🔧 Playwright 浏览器已启动, CDP: {cdp_ws}")
+
+                # 等待 CDP 端口就绪（最多 30 秒）
+                cdp_ready = False
+                for i in range(60):
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        if s.connect_ex(("127.0.0.1", cdp_port)) == 0:
+                            cdp_ready = True
+                            break
+                    # 检查进程是否已退出
+                    if chrome_process.poll() is not None:
+                        stderr_out = chrome_process.stderr.read().decode(errors="replace")
+                        raise RuntimeError(f"Chromium 启动失败 (exit {chrome_process.returncode}): {stderr_out[:500]}")
+                    _time.sleep(0.5)
+
+                if not cdp_ready:
+                    stderr_out = chrome_process.stderr.read(2048).decode(errors="replace") if chrome_process.stderr else ""
+                    chrome_process.kill()
+                    raise RuntimeError(f"Chromium CDP 端口 {cdp_port} 在 30 秒内未就绪。stderr: {stderr_out[:500]}")
+
+                cdp_url = f"http://127.0.0.1:{cdp_port}"
+                log(f"🔧 Chromium CDP 已就绪: {cdp_url}")
 
                 browser_profile = BrowserProfile(
-                    cdp_url=cdp_ws,
                     headless=headless,
                     enable_default_extensions=False,
                 )
-                browser = BrowserSession(browser_profile=browser_profile)
-                log("🌐 浏览器已通过 Playwright CDP 连接")
+                browser = BrowserSession(
+                    cdp_url=cdp_url,
+                    browser_profile=browser_profile,
+                )
+                log("🌐 浏览器已通过 CDP 连接")
             else:
                 # browser-use < 0.2.x: 使用 BrowserConfig + Browser
                 from browser_use.browser import BrowserConfig, Browser as BUBrowser
+                import shutil
+                browser_binary = os.environ.get("BROWSER_BINARY_PATH")
+                if not browser_binary:
+                    for name in ("chromium-browser", "chromium", "google-chrome-stable", "google-chrome"):
+                        path = shutil.which(name)
+                        if path:
+                            browser_binary = path
+                            break
                 cfg_kwargs = {"headless": headless}
                 disable_ext = os.getenv("DISABLE_DEFAULT_EXTENSIONS", "true").lower() != "false"
                 if disable_ext:
                     cfg_kwargs["enable_default_extensions"] = False
                 browser_cfg = BrowserConfig(**cfg_kwargs)
+                if browser_binary:
+                    if hasattr(browser_cfg, "browser_binary_path"):
+                        browser_cfg.browser_binary_path = browser_binary
+                    elif hasattr(browser_cfg, "chrome_instance_path"):
+                        browser_cfg.chrome_instance_path = browser_binary
                 browser = BUBrowser(config=browser_cfg)
                 log("\U0001f310 \u6d4f\u89c8\u5668\u5df2\u542f\u52a8...")
 
@@ -403,7 +486,11 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                 except Exception:
                     pass
 
-            await browser.close()
+            # browser-use 0.12.x: BrowserSession 用 stop() 而非 close()
+            if hasattr(browser, 'stop'):
+                await browser.stop()
+            elif hasattr(browser, 'close'):
+                await browser.close()
             browser = None
 
             result = ""
@@ -427,17 +514,22 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
         finally:
             if browser:
                 try:
-                    await browser.close()
+                    if hasattr(browser, 'stop'):
+                        await browser.stop()
+                    elif hasattr(browser, 'close'):
+                        await browser.close()
                 except Exception:
                     pass
-            # 关闭 Playwright 预启动的浏览器
+            # 杀掉手动启动的 Chrome 子进程
             try:
-                if 'pw_browser' in dir() and pw_browser:
-                    await pw_browser.close()
-                if 'pw' in dir() and pw:
-                    await pw.stop()
+                if chrome_process and chrome_process.poll() is None:
+                    chrome_process.terminate()
+                    chrome_process.wait(timeout=5)
             except Exception:
-                pass
+                try:
+                    chrome_process.kill()
+                except Exception:
+                    pass
             # 清理取消事件
             task_cancel.pop(task_id, None)
 
