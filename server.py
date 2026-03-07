@@ -351,7 +351,9 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                 ]
                 if proxy_url:
                     chrome_args.append(f"--proxy-server={proxy_url}")
-                    log(f"🔧 代理: {proxy_url}")
+                    # 强制 DNS 也走代理，避免国内 DNS 解析不了 facebook 等域名
+                    chrome_args.append("--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1")
+                    log(f"🔧 代理: {proxy_url} (DNS 也走代理)")
                 if headless:
                     chrome_args.append("--headless=new")
                 chrome_args.append("about:blank")
