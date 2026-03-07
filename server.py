@@ -144,6 +144,7 @@ PROVIDERS = {
                 "name": "GLM-4V Plus",
                 "tags": ["\U0001f3c6 \u65d7\u8230", "\U0001f441 \u89c6\u89c9", "\u2705 Tool Call"],
                 "vision": True,
+                "tool_calling_method": "raw",
                 "note": "\u667a\u8c31\u89c6\u89c9\u65d7\u8230\u6a21\u578b\uff0c\u652f\u6301\u622a\u56fe\u7406\u89e3"
             },
             {
@@ -151,6 +152,7 @@ PROVIDERS = {
                 "name": "GLM-4 Plus",
                 "tags": ["\U0001f3c6 \u65d7\u8230", "\u2705 Tool Call"],
                 "vision": False,
+                "tool_calling_method": "raw",
                 "note": "\u667a\u8c31\u6700\u5f3a\u6a21\u578b\uff0cTool Calling\u5b8c\u6574\u652f\u6301"
             },
             {
@@ -158,6 +160,7 @@ PROVIDERS = {
                 "name": "GLM-4V Flash",
                 "tags": ["\u26a1 \u6781\u5feb", "\U0001f441 \u89c6\u89c9", "\U0001f193 \u514d\u8d39"],
                 "vision": True,
+                "tool_calling_method": "raw",
                 "note": "\u514d\u8d39\u89c6\u89c9\u6a21\u578b\uff0c\u652f\u6301\u622a\u56fe\u7406\u89e3"
             },
             {
@@ -165,6 +168,7 @@ PROVIDERS = {
                 "name": "GLM-4 Flash",
                 "tags": ["\u26a1 \u6781\u5feb", "\U0001f193 \u514d\u8d39"],
                 "vision": False,
+                "tool_calling_method": "raw",
                 "note": "\u901f\u5ea6\u6700\u5feb\uff0c\u6709\u514d\u8d39\u989d\u5ea6"
             },
         ]
@@ -464,25 +468,40 @@ def run_browser_task(task_id: str, task_text: str, cfg: dict):
                         pass
                     await asyncio.sleep(0.8)
 
-            # 检测模型是否支持视觉
+            # 检测模型配置（视觉、tool_calling_method）
             model_vision = True  # 默认启用
+            model_tool_method = None  # 默认自动检测
             provider_key = cfg.get("provider", "")
             model_id_cfg = cfg.get("model", "")
             pinfo = PROVIDERS.get(provider_key, {})
             for m in pinfo.get("models", []):
                 if m["id"] == model_id_cfg:
                     model_vision = m.get("vision", True)
+                    model_tool_method = m.get("tool_calling_method")
                     break
             if not model_vision:
                 log(f"⚠️ 模型 {model_id_cfg} 不支持视觉，已禁用截图分析")
+            if model_tool_method:
+                log(f"🔧 模型 {model_id_cfg} 使用 tool_calling_method={model_tool_method}")
 
             log("🔧 [DEBUG] 创建 Agent 对象...")
             agent_kwargs = dict(task=task_text, llm=llm, use_vision=model_vision)
+            if model_tool_method:
+                agent_kwargs["tool_calling_method"] = model_tool_method
             if use_new_api:
                 agent_kwargs["browser_session"] = browser
             else:
                 agent_kwargs["browser"] = browser
-            agent = Agent(**agent_kwargs)
+            try:
+                agent = Agent(**agent_kwargs)
+            except TypeError as e:
+                # 旧版 browser-use 可能不支持 tool_calling_method 参数
+                if "tool_calling_method" in str(e) and "tool_calling_method" in agent_kwargs:
+                    log(f"⚠️ 当前 browser-use 版本不支持 tool_calling_method 参数，已忽略")
+                    del agent_kwargs["tool_calling_method"]
+                    agent = Agent(**agent_kwargs)
+                else:
+                    raise
             log("🔧 [DEBUG] Agent 创建成功")
             cap_t   = asyncio.create_task(capture())
             log("\u2699\ufe0f  AI \u5f00\u59cb\u5206\u6790\u4efb\u52a1...")
