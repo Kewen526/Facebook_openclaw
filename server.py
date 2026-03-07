@@ -3,7 +3,7 @@ Browser-Use Web UI v4
 支持经过筛选的模型：必须同时满足 Tool Calling + OpenAI兼容API
 新增：任务取消、超时控制、Cookie/Session 持久化、.env 支持
 """
-import asyncio, base64, json, os, signal, threading, time
+import asyncio, base64, json, os, re, signal, threading, time
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, request, jsonify, Response, send_from_directory
@@ -247,6 +247,103 @@ async def save_cookies_async(browser_context, domain: str):
     except Exception:
         pass
 
+# ── JSON 清洗：兼容国产模型 (智谱/Kimi/Qwen 等) 输出格式 ──────────
+
+def _clean_llm_json(raw: str) -> str:
+    """
+    剥离 LLM 返回中常见的非 JSON 包裹：
+      - Markdown 代码块:  ```json ... ```  或  ``` ... ```
+      - XML 标签:  <output> ... </output>
+    只保留最外层的 JSON 对象 { ... }
+    """
+    s = raw.strip()
+    # 1) 去掉 markdown 代码块
+    m = re.search(r'```(?:json)?\s*\n?(.*?)```', s, re.DOTALL)
+    if m:
+        s = m.group(1).strip()
+    # 2) 去掉 <output>...</output> 等 XML 包裹
+    m2 = re.search(r'<\w+>\s*(.*?)\s*</\w+>', s, re.DOTALL)
+    if m2 and m2.group(1).strip().startswith('{'):
+        s = m2.group(1).strip()
+    # 3) 保险：截取第一个 { 到最后一个 } 之间的内容
+    if not s.startswith('{'):
+        start = s.find('{')
+        end = s.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            s = s[start:end+1]
+    return s
+
+
+# 需要清洗输出的 provider 列表（不完美支持 structured output 的模型）
+_PROVIDERS_NEED_CLEANING = {"zhipu", "kimi", "qwen"}
+
+
+def _make_cleaned_chat_openai(ChatOpenAICls, **kwargs):
+    """
+    包装 ChatOpenAI，在解析前清洗 LLM 原始输出。
+    通过设置 dont_force_structured_output=True 避免模型不支持 json_schema 时报错，
+    并在 model_validate_json 之前清洗 markdown/XML 包裹。
+    """
+    import types
+    from browser_use.llm.openai.serializer import OpenAIMessageSerializer
+    from browser_use.llm.schema import SchemaOptimizer
+    from browser_use.llm.exceptions import ModelProviderError
+    from browser_use.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+    from openai.types.shared_params.response_format_json_schema import JSONSchema, ResponseFormatJSONSchema
+
+    instance = ChatOpenAICls(
+        dont_force_structured_output=True,
+        add_schema_to_system_prompt=True,
+        **kwargs,
+    )
+
+    _original_ainvoke = instance.ainvoke
+
+    async def _patched_ainvoke(messages, output_format=None, **kw):
+        if output_format is None:
+            return await _original_ainvoke(messages, output_format=None, **kw)
+
+        # 用无结构化输出模式调用
+        result = await _original_ainvoke(messages, output_format=None, **kw)
+        raw_content = result.completion
+        cleaned = _clean_llm_json(raw_content)
+        try:
+            parsed = output_format.model_validate_json(cleaned)
+        except Exception:
+            # 如果还是失败，尝试更激进的清洗
+            try:
+                # 尝试找到平衡的 {} 块
+                brace_count = 0
+                start_idx = cleaned.find('{')
+                if start_idx == -1:
+                    raise
+                end_idx = start_idx
+                for i in range(start_idx, len(cleaned)):
+                    if cleaned[i] == '{':
+                        brace_count += 1
+                    elif cleaned[i] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            end_idx = i + 1
+                            break
+                balanced = cleaned[start_idx:end_idx]
+                parsed = output_format.model_validate_json(balanced)
+            except Exception as e2:
+                raise ModelProviderError(
+                    message=str(e2),
+                    model=instance.name,
+                ) from e2
+
+        return ChatInvokeCompletion(
+            completion=parsed,
+            usage=result.usage,
+            stop_reason=result.stop_reason,
+        )
+
+    instance.ainvoke = _patched_ainvoke
+    return instance
+
+
 # ── 构建 LLM ────────────────────────────────────────────────────────
 
 def build_llm(cfg: dict):
@@ -276,6 +373,9 @@ def build_llm(cfg: dict):
         kwargs = dict(model=model_id, api_key=key, temperature=0)
         if base_url:
             kwargs["base_url"] = base_url
+        # 国产模型不完整支持 OpenAI structured output，需要清洗
+        if provider in _PROVIDERS_NEED_CLEANING:
+            return _make_cleaned_chat_openai(ChatOpenAI, **kwargs)
         return ChatOpenAI(**kwargs)
 
 # ── Browser-Use 执行器 ──────────────────────────────────────────────
